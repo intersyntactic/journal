@@ -13,11 +13,12 @@
 /// Each is added before its object. An entry is 97 bytes ([RecordEntry]):
 /// the hash of the entry before it, this driver's own hash, the object's id,
 /// and a byte saying whether the person approved that hash. An entry that is
-/// changed or removed breaks the chain at the entry after it
-/// ([RecordDriver.check]). The chain is a checksum against damage and drift,
-/// not proof against someone set on editing it: entries cut from the end
-/// leave a shorter record that still chains, and sha256 has no secret, so
-/// whoever can write the file can recompute it. So run what the record
+/// changed or removed breaks the chain at the entry after it, and an entry
+/// whose object is not here is named too ([RecordDriver.check]). The chain
+/// is a checksum against damage and drift, not proof against someone set on
+/// editing it: entries cut from the end leave a shorter record that still
+/// chains, and sha256 has no secret, so whoever can write the file can
+/// recompute it. So run what the record
 /// watches as a user that can write neither this directory, this driver's
 /// code nor `approved`, in a process that cannot reload this driver: a
 /// driver reloaded in place keeps the [RecordDriver.hash] it opened with.
@@ -167,9 +168,10 @@ final class NoRecord extends RecordCheck {
   const NoRecord();
 }
 
-/// Every one of [count] entries names the entry before it. [head] is the
-/// last entry's hash ([EntryHash.origin] when there are none). Entries cut
-/// from the end leave a record that is still intact.
+/// Every one of [count] entries names the entry before it, and an object
+/// that is here. [head] is the last entry's hash ([EntryHash.origin] when
+/// there are none). Entries cut from the end leave a record that is still
+/// intact.
 final class Intact extends RecordCheck {
   const Intact(this.count, this.head);
   final int count;
@@ -180,10 +182,15 @@ final class Intact extends RecordCheck {
 /// entry before them: all of them, since checking goes on past a break,
 /// each entry against the bytes before it as they are. [torn] counts the
 /// bytes after the last whole entry, left by a write a crash cut short.
+/// [missing] numbers the entries whose object is not in `objects/`: a crash
+/// between an entry and its object, an object removed since, or a put still
+/// under way in another process. A [RecordDriver.put] of those bytes writes
+/// the object again.
 final class Broken extends RecordCheck {
-  const Broken(this.entries, this.torn);
+  const Broken(this.entries, this.torn, this.missing);
   final List<int> entries;
   final int torn;
+  final List<int> missing;
 }
 
 /// Stored bytes that no longer hash to their name: torn, edited or damaged.
@@ -296,10 +303,10 @@ final class RecordDriver {
   /// Records that [bytes] are about to leave, keeps them, and returns their
   /// id. Every call adds an entry, so the same bytes sent twice are recorded
   /// twice. The entry goes in before the object: a crash between the two
-  /// leaves an entry naming an object that never arrived, never an object no
-  /// entry names. The object is written when it is absent or no longer holds
-  /// these bytes; the temporary file is named for this process, which no
-  /// other driver shares.
+  /// leaves an entry naming an object that never arrived, which [check]
+  /// reports, never an object no entry names. The object is written when it
+  /// is absent or no longer holds these bytes; the temporary file is named
+  /// for this process, which no other driver shares.
   ObjectId put(Uint8List bytes) {
     if (!_open) throw StateError('this driver is closed');
     final id = ObjectId.of(bytes);
@@ -359,25 +366,35 @@ final class RecordDriver {
     return EntryHash.of(f.readSync(RecordEntry.length));
   }
 
-  /// Every entry checked against the one before it.
+  /// Every entry checked against the one before it, and for whether the
+  /// object it names is here. Not whether that object still holds its bytes:
+  /// that reads every byte ever sent, and [get] checks it on each read.
   RecordCheck check() {
     final file = File('${dir.path}/entries');
     if (!file.existsSync()) return const NoRecord();
     final bytes = file.readAsBytesSync();
     final broken = <int>[];
+    final missing = <int>[];
+    final here = <ObjectId, bool>{};
     var previous = EntryHash.origin;
     var at = 0;
     for (; at + RecordEntry.length <= bytes.length; at += RecordEntry.length) {
+      final n = at ~/ RecordEntry.length + 1;
       final raw = Uint8List.sublistView(bytes, at, at + RecordEntry.length);
       final entry = RecordEntry.parse(raw);
-      if (entry == null || entry.previous != previous) {
-        broken.add(at ~/ RecordEntry.length + 1);
+      if (entry == null || entry.previous != previous) broken.add(n);
+      if (entry != null &&
+          !here.putIfAbsent(
+            entry.object,
+            () => _object(entry.object).existsSync(),
+          )) {
+        missing.add(n);
       }
       previous = EntryHash.of(raw);
     }
     final torn = bytes.length - at;
-    return broken.isEmpty && torn == 0
+    return broken.isEmpty && torn == 0 && missing.isEmpty
         ? Intact(at ~/ RecordEntry.length, previous)
-        : Broken(broken, torn);
+        : Broken(broken, torn, missing);
   }
 }

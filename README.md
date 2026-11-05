@@ -47,8 +47,10 @@ One directory, which it only ever adds to:
 - **`writer.<pid>`**, while a driver has the directory open: see below.
 
 `check()` says which entries do not parse or do not name the entry before
-them (`Broken`), or that there is no record (`NoRecord`), or that every entry
-chains (`Intact`), with the record's `head`: the hash of its last entry.
+them, and which name an object that is not in `objects/` (`Broken`), or that
+there is no record (`NoRecord`), or that every entry chains and its object is
+here (`Intact`), with the record's `head`: the hash of its last entry. Whether
+an object still holds its bytes is checked each time it is read.
 
 The chain is a checksum against damage and drift: a crash, a bug, a failing
 disk, or a driver nobody reviewed. It proves nothing to anyone else, and it is
@@ -99,6 +101,10 @@ directory, in bash:
       case "${#e}:${e:0:64}:${e:192}" in
         "194:$p:41" | "194:$p:55") ;;
         *) echo "entry $n is broken" ;;
+      esac
+      case "${#e}:${e:192}" in
+        194:41 | 194:55) o=${e:128:64}
+          [ -f "objects/${o:0:2}/${o:2}" ] || echo "entry $n's object is missing" ;;
       esac
       p=$(printf %s "$e" | xxd -r -p | shasum -a 256 | cut -c1-64)
     done < <(xxd -p -c 97 entries)

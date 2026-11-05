@@ -37,6 +37,9 @@ void main() {
   late RecordDriver driver;
   File entries() => File('${dir.path}/entries');
   Uint8List entriesBytes() => entries().readAsBytesSync();
+  File object(ObjectId id) => File(
+    '${dir.path}/objects/${id.hex.substring(0, 2)}/${id.hex.substring(2)}',
+  );
   void putAll(String prefix, int n) {
     for (var i = 0; i < n; i++) {
       driver.put(bytesOf('$prefix $i'));
@@ -88,9 +91,7 @@ void main() {
 
     test('that no longer hash to their name throw, until put again', () {
       final id = driver.put(bytesOf('what went up'));
-      File(
-        '${dir.path}/objects/${id.hex.substring(0, 2)}/${id.hex.substring(2)}',
-      ).writeAsStringSync('edited');
+      object(id).writeAsStringSync('edited');
       expect(() => driver.get(id), throwsA(isA<CorruptObject>()));
       driver.put(bytesOf('what went up'));
       expect(driver.get(id), bytesOf('what went up'));
@@ -177,12 +178,34 @@ void main() {
       entries().writeAsBytesSync(entriesBytes()..[97 * 2 + 70] ^= 1);
       final check = driver.check() as Broken;
       expect(
-        [check.entries, check.torn],
+        [check.entries, check.torn, check.missing],
         [
           [4],
           0,
+          // The change was to entry 3's object id, which names no object.
+          [3],
         ],
       );
+    });
+
+    test('names an entry whose object is gone, until it is put again', () {
+      putAll('step', 3);
+      final gone = RecordEntry.parse(
+        Uint8List.sublistView(entriesBytes(), 97, 97 * 2),
+      )!.object;
+      object(gone).deleteSync();
+      final check = driver.check() as Broken;
+      expect(
+        [check.entries, check.torn, check.missing],
+        [
+          <int>[],
+          0,
+          [2],
+        ],
+      );
+
+      driver.put(bytesOf('step 1'));
+      expect((driver.check() as Intact).count, 4);
     });
 
     test('still chains with entries cut from the end; only the head tells', () {
@@ -198,21 +221,31 @@ void main() {
       putAll('before', 3);
       entries().writeAsBytesSync(entriesBytes().sublist(0, 97 * 2 + 50));
       var check = driver.check() as Broken;
-      expect([check.entries, check.torn], [<int>[], 50]);
+      expect(
+        [check.entries, check.torn, check.missing],
+        [<int>[], 50, <int>[]],
+      );
 
       putAll('after', 3);
       check = driver.check() as Broken;
       expect(
-        [check.entries, check.torn],
+        [check.entries, check.torn, check.missing],
         [
           [3],
           0,
+          <int>[],
         ],
       );
 
       entries().writeAsBytesSync(entriesBytes()..[97 * 4 + 70] ^= 1);
       check = driver.check() as Broken;
-      expect(check.entries, [3, 6]);
+      expect(
+        [check.entries, check.missing],
+        [
+          [3, 6],
+          [5],
+        ],
+      );
     });
 
     test("the README's bash finds what check() finds", () {
@@ -224,12 +257,47 @@ void main() {
       );
 
       entries().writeAsBytesSync(entriesBytes()..[97 + 70] ^= 1);
-      final broken = RegExp(r'entry (\d+) is broken')
-          .allMatches(bash(script, dir))
-          .map((m) => int.parse(m[1]!))
-          .toList();
-      expect(broken, (driver.check() as Broken).entries);
-      expect(broken, [3]);
+      final check = driver.check() as Broken;
+      expect(bashFinds(script, dir), [check.entries, check.missing]);
+      expect(
+        [check.entries, check.missing],
+        [
+          [3],
+          [2],
+        ],
+      );
+    });
+
+    test("the README's bash skips the object of an entry a crash tore", () {
+      putAll('before', 3);
+      entries().writeAsBytesSync(entriesBytes().sublist(0, 97 * 2 + 50));
+      putAll('after', 2);
+      // Entry 3 is padded with zeros: no review byte, and an object id of
+      // zeros that names nothing, which neither check counts as missing.
+      final check = driver.check() as Broken;
+      expect(bashFinds(readmeBlock('directory, in bash:'), dir), [
+        check.entries,
+        check.missing,
+      ]);
+      expect(
+        [check.entries, check.missing],
+        [
+          [3],
+          <int>[],
+        ],
+      );
     });
   });
+}
+
+/// The entries the README's bash [script] says are broken, and those it says
+/// have no object, as [Broken.entries] and [Broken.missing] number them.
+List<List<int>> bashFinds(String script, Directory dir) {
+  final printed = bash(script, dir);
+  List<int> numbered(String says) =>
+      RegExp('entry (\\d+)$says')
+          .allMatches(printed)
+          .map((m) => int.parse(m[1]!))
+          .toList();
+  return [numbered(' is broken'), numbered("'s object is missing")];
 }
