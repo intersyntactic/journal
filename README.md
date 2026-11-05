@@ -16,6 +16,7 @@ void main() {
   final driver = RecordDriver.open(Directory('airlock_record'))!;
   final id = driver.put(utf8.encode('what went up'));
   print('$id, written by ${driver.hash} (${driver.review.name})');
+  driver.close();
 }
 ```
 
@@ -24,11 +25,12 @@ void main() {
 One directory, which it only ever adds to:
 
 - **Objects** in `objects/<2>/<62>`: bytes named by their sha256. Each is
-  written only if that name is absent, and checked against its name whenever
-  it is read (`CorruptObject` if it no longer matches). The same bytes are the
+  written when that name is absent or no longer holds them, and checked against
+  its name whenever it is read (`CorruptObject` if it no longer matches). The same bytes are the
   same object whoever wrote them, so two records merge by copying objects in.
-- **The entries** in `entries`: one for each object written, added before
-  the object is. Each entry is 97 bytes:
+- **The entries** in `entries`: one each time bytes are about to leave
+  (`put`), even bytes already stored, added before the object. Each entry is
+  97 bytes:
 
   | bytes | what |
   |---|---|
@@ -42,11 +44,23 @@ One directory, which it only ever adds to:
   last, so an entry torn by a crash is missing it; the driver pads a torn tail
   with zeros before it writes again, and a zero is neither review.
 
+- **`writer.<pid>`**, while a driver has the directory open: see below.
+
 `check()` says which entries do not parse or do not name the entry before
 them (`Broken`), or that there is no record (`NoRecord`), or that every entry
-chains (`Intact`), with the record's `head`: the hash of its last entry. An
-entry removed from the end leaves a shorter record that still chains, so to
-notice that, keep the head somewhere the driver cannot write and compare.
+chains (`Intact`), with the record's `head`: the hash of its last entry.
+
+The chain is a checksum against damage and drift: a crash, a bug, a failing
+disk, or a driver nobody reviewed. It proves nothing to anyone else, and it is
+not proof against someone set on editing it: entries cut from the end leave a
+record that is still `Intact`, and sha256 has no secret, so whoever can write
+the file can recompute it.
+
+There is one writer per directory. `RecordDriver.open` creates `writer.<pid>`
+only if it is absent, so a second driver in the same process, in any isolate,
+cannot open the directory until the first calls `close()`. Dart has no append
+that cannot overwrite, and two writers in one process would write over each
+other's entries. Separate processes take turns at each entry through a lock.
 
 ## Checking it
 

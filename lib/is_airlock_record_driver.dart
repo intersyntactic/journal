@@ -3,18 +3,28 @@
 /// two things in one directory and only ever adds to them.
 ///
 /// OBJECTS, `objects/<2>/<62>`: bytes named by their sha256 ([ObjectId]),
-/// written only if that name is absent and checked against it whenever they
-/// are read. The same bytes are the same object whichever home or driver
-/// wrote them, so two stores merge by copying each other's objects in.
+/// written when that name is absent or no longer holds them, and checked
+/// against it whenever they are read. The same bytes are the same object
+/// whichever home or driver wrote them, so two stores merge by copying each
+/// other's objects in.
 ///
-/// THE ENTRIES, `entries`: one for each object this driver writes, added
-/// before the object is. An entry is 97 bytes ([RecordEntry]): the hash of
-/// the entry before it, this driver's own hash, the object's id, and a byte
-/// saying whether the person approved that hash. An entry that is changed or
-/// removed breaks the chain at the entry after it ([RecordDriver.check]).
-/// At the end there is no entry after it: an entry removed from the end
-/// leaves a shorter record that still chains, so a reader that must notice
-/// that keeps the record's head somewhere this driver cannot write.
+/// THE ENTRIES, `entries`: one for each [RecordDriver.put], that is, each
+/// time bytes are about to leave, whether or not they are already stored.
+/// Each is added before its object. An entry is 97 bytes ([RecordEntry]):
+/// the hash of the entry before it, this driver's own hash, the object's id,
+/// and a byte saying whether the person approved that hash. An entry that is
+/// changed or removed breaks the chain at the entry after it
+/// ([RecordDriver.check]). The chain is a checksum against damage and drift,
+/// not proof against someone set on editing it: entries cut from the end
+/// leave a shorter record that still chains, and sha256 has no secret, so
+/// whoever can write the file can recompute it.
+///
+/// ONE WRITER: [RecordDriver.open] claims the directory for its process by
+/// creating `writer.<pid>` there only if it is absent, so no second driver
+/// in the same process, in any isolate, can open it until
+/// [RecordDriver.close]. Dart has no append that cannot overwrite, and two
+/// writers in one process would write over each other's entries. Processes
+/// take turns at each entry through a lock on `entries`.
 ///
 /// THE DRIVER'S HASH is the sha256 of what `shasum -a 256` prints for this
 /// package's `lib/` files, so the person can compute it without running this
@@ -113,9 +123,8 @@ final class NoRecord extends RecordCheck {
 }
 
 /// Every one of [count] entries names the entry before it. [head] is the
-/// last entry's hash ([EntryHash.origin] when there are none). An entry
-/// removed from the end leaves a record that still chains, so to notice
-/// that, compare [head] with one kept where this driver cannot write.
+/// last entry's hash ([EntryHash.origin] when there are none). Entries cut
+/// from the end leave a record that is still intact.
 final class Intact extends RecordCheck {
   const Intact(this.count, this.head);
   final int count;
@@ -133,7 +142,8 @@ final class Broken extends RecordCheck {
 }
 
 /// Stored bytes that no longer hash to their name: torn, edited or damaged.
-/// Never repaired: the bytes the name stood for are gone.
+/// [RecordDriver.get] throws it; a [RecordDriver.put] of the bytes the name
+/// stands for writes them again.
 final class CorruptObject implements Exception {
   const CorruptObject(this.id);
   final ObjectId id;
@@ -143,21 +153,49 @@ final class CorruptObject implements Exception {
 }
 
 final class RecordDriver {
-  RecordDriver._(this.dir, this.hash);
+  RecordDriver._(this.dir, this.hash, this._writer);
 
-  /// Holds `objects/`, `entries` and `approved`.
+  /// Holds `objects/`, `entries`, `approved` and, while a driver has it open,
+  /// `writer.<pid>`.
   final Directory dir;
 
   /// This driver's own hash, computed from its source when it opened.
   final DriverHash hash;
 
-  /// A record driver writing into [dir]. Null when it cannot name itself the
-  /// way the library comment does ([ownHash]): every entry names the driver
-  /// that wrote it, and a driver that cannot name itself writes none.
-  static RecordDriver? open(Directory dir) => switch (ownHash()) {
-    final hash? => RecordDriver._(dir, hash),
-    null => null,
-  };
+  /// This driver's claim on [dir], deleted by [close].
+  final File _writer;
+  var _open = true;
+
+  /// A record driver writing into [dir], which it claims for this process
+  /// until [close] (see the library comment). Throws a [StateError] when
+  /// [dir] is already claimed by this process. Null when the driver cannot
+  /// name itself the way the library comment does ([ownHash]): every entry
+  /// names the driver that wrote it, and a driver that cannot name itself
+  /// writes none.
+  static RecordDriver? open(Directory dir) {
+    final hash = ownHash();
+    if (hash == null) return null;
+    dir.createSync(recursive: true);
+    final writer = File('${dir.path}/writer.$pid');
+    try {
+      writer.createSync(exclusive: true);
+    } on FileSystemException {
+      throw StateError(
+        '${dir.path} is already open in this process. If no driver here has '
+        'it open, a crashed process with the same id left ${writer.path}; '
+        'delete it.',
+      );
+    }
+    return RecordDriver._(dir, hash, writer);
+  }
+
+  /// Gives up this driver's claim on [dir], so another driver in this
+  /// process can open it. This driver writes nothing after.
+  void close() {
+    if (!_open) return;
+    _open = false;
+    _writer.deleteSync();
+  }
 
   /// The hash of this package's `lib/` as the library comment computes it.
   /// Null when it cannot be computed exactly that way: the source is not on
@@ -209,15 +247,21 @@ final class RecordDriver {
     '${dir.path}/objects/${id.hex.substring(0, 2)}/${id.hex.substring(2)}',
   );
 
-  /// Adds [bytes] and returns their id. Bytes already here are the same
-  /// object, so nothing is written or recorded. Otherwise the entry goes in
-  /// first: a crash between the two leaves an entry naming an object that
-  /// never arrived, never an object no entry names.
+  /// Records that [bytes] are about to leave, keeps them, and returns their
+  /// id. Every call adds an entry, so the same bytes sent twice are recorded
+  /// twice. The entry goes in before the object: a crash between the two
+  /// leaves an entry naming an object that never arrived, never an object no
+  /// entry names. The object is written when it is absent or no longer holds
+  /// these bytes; the temporary file is named for this process, which no
+  /// other driver shares.
   ObjectId put(Uint8List bytes) {
+    if (!_open) throw StateError('this driver is closed');
     final id = ObjectId.of(bytes);
-    final file = _object(id);
-    if (file.existsSync()) return id;
     _record(id);
+    final file = _object(id);
+    if (file.existsSync() && ObjectId.of(file.readAsBytesSync()) == id) {
+      return id;
+    }
     file.parent.createSync(recursive: true);
     final tmp = File('${file.path}.$pid.tmp');
     tmp.writeAsBytesSync(bytes, flush: true);

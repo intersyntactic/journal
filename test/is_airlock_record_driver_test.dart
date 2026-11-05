@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:is_airlock_record_driver/is_airlock_record_driver.dart';
@@ -19,6 +20,11 @@ String readmeBlock(String marker) {
       .map((l) => l.substring(4))
       .join('\n');
 }
+
+/// [RecordDriver.open] of [path] from another isolate. Top-level, so the
+/// closure sent to it carries [path] and nothing of a test's state.
+Future<RecordDriver?> openInAnotherIsolate(String path) =>
+    Isolate.run(() => RecordDriver.open(Directory(path)));
 
 String bash(String script, Directory dir) {
   final r = Process.runSync('bash', ['-c', script], workingDirectory: dir.path);
@@ -123,19 +129,45 @@ void main() {
   });
 
   group('objects', () {
-    test('come back as they went in, and the same bytes are one object', () {
+    test('come back as they went in; sent twice, one object, two entries', () {
       final id = driver.put(bytesOf('what went up'));
       expect(driver.get(id), bytesOf('what went up'));
       expect(driver.put(bytesOf('what went up')), id);
-      expect(entriesBytes().length, RecordEntry.length);
+      expect(entriesBytes().length, 2 * RecordEntry.length);
+      final objects = Directory('${dir.path}/objects')
+          .listSync(recursive: true);
+      expect(objects.whereType<File>().length, 1);
     });
 
-    test('that no longer hash to their name throw CorruptObject', () {
+    test('that no longer hash to their name throw, until put again', () {
       final id = driver.put(bytesOf('what went up'));
       File(
         '${dir.path}/objects/${id.hex.substring(0, 2)}/${id.hex.substring(2)}',
       ).writeAsStringSync('edited');
       expect(() => driver.get(id), throwsA(isA<CorruptObject>()));
+      driver.put(bytesOf('what went up'));
+      expect(driver.get(id), bytesOf('what went up'));
+    });
+  });
+
+  group('one writer', () {
+    test('a second open in this process throws until the first closes', () {
+      expect(() => RecordDriver.open(dir), throwsStateError);
+      driver.close();
+      RecordDriver.open(dir)!
+        ..put(bytesOf('after'))
+        ..close();
+      expect(driver.check(), isA<Intact>());
+    });
+
+    test('another isolate in this process cannot open it', () async {
+      await expectLater(openInAnotherIsolate(dir.path), throwsStateError);
+    });
+
+    test('a closed driver writes nothing', () {
+      driver.close();
+      expect(() => driver.put(bytesOf('late')), throwsStateError);
+      expect(entries().existsSync(), isFalse);
     });
   });
 

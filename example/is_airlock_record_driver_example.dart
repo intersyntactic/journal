@@ -16,4 +16,5 @@ void main() {
   print('stored as $id');
   print('read back: ${utf8.decode(driver.get(id)!)}');
   print('record intact: ${driver.check() is Intact}');
+  driver.close();
 }
