@@ -2,134 +2,134 @@
 /// decide, since deciding them would need a record of their own. It keeps
 /// two things in one directory and only ever adds to them.
 ///
-/// OBJECTS, `objects/<2>/<62>`: bytes named by their sha256, written only if
-/// that name is absent and checked against it whenever they are read. The
-/// same bytes are the same object whichever home or driver wrote them, so two
-/// stores merge by copying each other's objects in.
+/// OBJECTS, `objects/<2>/<62>`: bytes named by their sha256 ([ObjectId]),
+/// written only if that name is absent and checked against it whenever they
+/// are read. The same bytes are the same object whichever home or driver
+/// wrote them, so two stores merge by copying each other's objects in.
 ///
-/// THE RECORD, `record`: one line for each object this driver writes, added
-/// before the object is. A line holds the hash of the line before it, this
-/// driver's own hash, whether the person approved that hash, and the object's
-/// id. A line that is changed or removed breaks the chain at the line after
-/// it ([RecordDriver.firstBrokenLine]).
+/// THE ENTRIES, `entries`: one for each object this driver writes, added
+/// before the object is. An entry is 97 bytes ([RecordEntry]): the hash of
+/// the entry before it, this driver's own hash, the object's id, and a byte
+/// saying whether the person approved that hash. An entry that is changed or
+/// removed breaks the chain at the entry after it ([RecordDriver.check]).
+/// At the end there is no entry after it: an entry removed from the end
+/// leaves a shorter record that still chains, so a reader that must notice
+/// that keeps the record's head somewhere this driver cannot write.
 ///
 /// THE DRIVER'S HASH is the sha256 of what `shasum -a 256` prints for this
 /// package's `lib/` files, so the person can compute it without running this
 /// code, from the package's root:
 ///
-///     cd lib &&
-///       find . -name '*.dart' | LC_ALL=C sort | xargs shasum -a 256 | shasum -a 256
+///     (cd lib && find . -type f -name '*.dart' -print0 |
+///       LC_ALL=C sort -z | xargs -0 shasum -a 256 | shasum -a 256)
 ///
 /// The hash they approve goes in the `approved` file beside the record. This
 /// driver reads that file and never writes it.
 ///
-/// It imports only `dart:io`, `dart:isolate` and `package:crypto`, because
-/// everything it imports is part of what the person checks. An import added
-/// here changes the hash like any other edit, so the person sees it.
+/// It imports only `dart:io`, `dart:isolate`, `dart:typed_data` and
+/// `content_id.dart` beside it, which holds the sha256 every name is made
+/// with. No package: everything it imports is part of what the person
+/// checks, and a package's code is outside the hash. An import added here
+/// changes the hash like any other edit, so the person sees it.
 /// Everything is synchronous: a caller records what it is about to do before
 /// it does it, and one write must not interleave with another.
 library;
 
 import 'dart:io';
 import 'dart:isolate';
+import 'dart:typed_data';
 
-import 'package:crypto/crypto.dart';
+import 'content_id.dart';
 
-final _sha256Hex = RegExp(r'^[0-9a-f]{64}$');
+export 'content_id.dart';
 
-String _sha(List<int> bytes) => sha256.convert(bytes).toString();
+/// A name `shasum` prints as it is: printable ASCII with no backslash.
+final _plainName = RegExp(r'^[\x20-\x5b\x5d-\x7e]+$');
 
-/// A sha256 in lower-case hex. Each kind below is made only by this library:
-/// from bytes it hashes, or by `parse` where a name is read back, so code
-/// holding one never asks whether it is valid. Classes, not extension types,
-/// since a `String` can be cast to an extension type and skip both.
-abstract final class _Digest {
-  const _Digest(this.hex);
-  final String hex;
-
-  @override
-  bool operator ==(Object other) =>
-      other is _Digest && other.runtimeType == runtimeType && other.hex == hex;
-
-  @override
-  int get hashCode => hex.hashCode;
-
-  @override
-  String toString() => hex;
-}
-
-/// An object's name: the sha256 of its bytes.
-final class ObjectId extends _Digest {
-  const ObjectId._(super.hex);
-
-  /// The id [bytes] are stored under.
-  factory ObjectId.of(List<int> bytes) => ObjectId._(_sha(bytes));
-
-  /// [s] as an id, read back; null when it is not a sha256 in hex.
-  static ObjectId? parse(String s) =>
-      _sha256Hex.hasMatch(s) ? ObjectId._(s) : null;
-}
-
-/// The sha256 of a record driver's own code (see the library comment).
-final class DriverHash extends _Digest {
-  const DriverHash._(super.hex);
-
-  static DriverHash? parse(String s) =>
-      _sha256Hex.hasMatch(s) ? DriverHash._(s) : null;
-}
-
-/// The sha256 of one record line and its newline.
-final class LineHash extends _Digest {
-  const LineHash._(super.hex);
-
-  /// [line]'s hash.
-  factory LineHash.of(String line) => LineHash._(_sha('$line\n'.codeUnits));
-
-  static LineHash? parse(String s) =>
-      _sha256Hex.hasMatch(s) ? LineHash._(s) : null;
-
-  /// What the first line names as the line before it.
-  static final origin = LineHash._('0' * 64);
-}
-
-/// Whether the driver that wrote a line was the one the person approved.
+/// Whether the driver that wrote an entry was the one the person approved.
+/// Its byte ends the entry, and neither is zero, so an entry torn and padded
+/// with zeros never reads as either.
 enum Review {
-  approved,
-  unreviewed;
+  approved(0x41), // 'A'
+  unreviewed(0x55); // 'U'
 
-  static Review? parse(String s) {
+  const Review(this.byte);
+  final int byte;
+
+  /// The review [byte] stands for; null for any other byte.
+  static Review? fromByte(int byte) {
     for (final r in values) {
-      if (r.name == s) return r;
+      if (r.byte == byte) return r;
     }
     return null;
   }
 }
 
-/// One line of the record: `<previous> <driver> <review> <object>`.
-final class RecordLine {
-  const RecordLine(this.previous, this.driver, this.review, this.object);
+/// One entry of the record: `previous │ driver │ object │ review`, 32 + 32 +
+/// 32 + 1 bytes. The review byte is last, so an entry torn anywhere is
+/// missing it.
+final class RecordEntry {
+  const RecordEntry(this.previous, this.driver, this.object, this.review);
 
-  final LineHash previous;
+  /// An entry's length in bytes.
+  static const length = 97;
+
+  final EntryHash previous;
   final DriverHash driver;
-  final Review review;
   final ObjectId object;
+  final Review review;
 
-  static RecordLine? parse(String line) => switch (line.split(' ')) {
-    [final p, final d, final r, final o] => switch ((
-      LineHash.parse(p),
-      DriverHash.parse(d),
-      Review.parse(r),
-      ObjectId.parse(o),
+  /// [bytes] as an entry, read back; null unless they are [length] bytes
+  /// ending in a review byte.
+  static RecordEntry? parse(Uint8List bytes) {
+    if (bytes.length != length) return null;
+    return switch ((
+      EntryHash.fromDigest(Uint8List.sublistView(bytes, 0, 32)),
+      DriverHash.fromDigest(Uint8List.sublistView(bytes, 32, 64)),
+      ObjectId.fromDigest(Uint8List.sublistView(bytes, 64, 96)),
+      Review.fromByte(bytes[96]),
     )) {
-      (final p?, final d?, final r?, final o?) => RecordLine(p, d, r, o),
+      (final p?, final d?, final o?, final r?) => RecordEntry(p, d, o, r),
       _ => null,
-    },
-    _ => null,
-  };
+    };
+  }
 
-  @override
-  String toString() =>
-      '${previous.hex} ${driver.hex} ${review.name} ${object.hex}';
+  /// The entry's [length] bytes, as the record keeps them.
+  Uint8List encode() => Uint8List(length)
+    ..setAll(0, previous.bytes)
+    ..setAll(32, driver.bytes)
+    ..setAll(64, object.bytes)
+    ..[96] = review.byte;
+}
+
+/// What [RecordDriver.check] found.
+sealed class RecordCheck {
+  const RecordCheck();
+}
+
+/// There is no record: nothing was written here, or the record was removed.
+final class NoRecord extends RecordCheck {
+  const NoRecord();
+}
+
+/// Every one of [count] entries names the entry before it. [head] is the
+/// last entry's hash ([EntryHash.origin] when there are none). An entry
+/// removed from the end leaves a record that still chains, so to notice
+/// that, compare [head] with one kept where this driver cannot write.
+final class Intact extends RecordCheck {
+  const Intact(this.count, this.head);
+  final int count;
+  final EntryHash head;
+}
+
+/// The [entries], numbered from 1, that do not parse or do not name the
+/// entry before them: all of them, since checking goes on past a break,
+/// each entry against the bytes before it as they are. [torn] counts the
+/// bytes after the last whole entry, left by a write a crash cut short.
+final class Broken extends RecordCheck {
+  const Broken(this.entries, this.torn);
+  final List<int> entries;
+  final int torn;
 }
 
 /// Stored bytes that no longer hash to their name: torn, edited or damaged.
@@ -145,22 +145,25 @@ final class CorruptObject implements Exception {
 final class RecordDriver {
   RecordDriver._(this.dir, this.hash);
 
-  /// Holds `objects/`, `record` and `approved`.
+  /// Holds `objects/`, `entries` and `approved`.
   final Directory dir;
 
   /// This driver's own hash, computed from its source when it opened.
   final DriverHash hash;
 
-  /// A record driver writing into [dir]. Null when it cannot find its own
-  /// source to hash, as in a compiled build: every line names the driver
+  /// A record driver writing into [dir]. Null when it cannot name itself the
+  /// way the library comment does ([ownHash]): every entry names the driver
   /// that wrote it, and a driver that cannot name itself writes none.
   static RecordDriver? open(Directory dir) => switch (ownHash()) {
     final hash? => RecordDriver._(dir, hash),
     null => null,
   };
 
-  /// The hash of this package's `lib/` as the library comment computes it,
-  /// or null when its source is not on disk.
+  /// The hash of this package's `lib/` as the library comment computes it.
+  /// Null when it cannot be computed exactly that way: the source is not on
+  /// disk, as in a compiled build; `lib/` holds a link, which `find` and this
+  /// code would walk differently; or a file's name is one `shasum` would
+  /// print differently from how it is written.
   static DriverHash? ownHash() {
     final entry = Isolate.resolvePackageUriSync(
       Uri.parse(
@@ -169,26 +172,37 @@ final class RecordDriver {
     );
     if (entry == null || !entry.isScheme('file')) return null;
     final lib = File.fromUri(entry).parent.path;
-    final names = [
-      for (final f in Directory(lib).listSync(recursive: true))
-        if (f is File && f.path.endsWith('.dart'))
-          '.${f.path.substring(lib.length)}',
-    ]..sort();
+    final names = <String>[];
+    for (final f in Directory(
+      lib,
+    ).listSync(recursive: true, followLinks: false)) {
+      if (f is Link) return null;
+      if (f is! File || !f.path.endsWith('.dart')) continue;
+      final name =
+          '.${f.path.substring(lib.length).replaceAll(Platform.pathSeparator, '/')}';
+      if (!_plainName.hasMatch(name)) return null;
+      names.add(name);
+    }
+    names.sort();
     final listing = StringBuffer();
     for (final name in names) {
       final bytes = File('$lib${name.substring(1)}').readAsBytesSync();
-      listing.write('${_sha(bytes)}  $name\n');
+      listing.write('${ObjectId.of(bytes).hex}  $name\n');
     }
-    return DriverHash._(_sha(listing.toString().codeUnits));
+    // Every name is ASCII, so its code units are its bytes.
+    return DriverHash.of(Uint8List.fromList(listing.toString().codeUnits));
   }
 
-  /// Whether this driver is the one in `approved`, read at every line so an
-  /// approval counts from the next line on.
+  /// Whether this driver is the one in `approved`, read at every entry so an
+  /// approval counts from the next entry on. Only the file's first word is
+  /// read, so the line `shasum` prints (`<hash>  -`) can go in as it is.
   Review get review {
     final file = File('${dir.path}/approved');
     if (!file.existsSync()) return Review.unreviewed;
-    final approved = DriverHash.parse(file.readAsStringSync().trim());
-    return approved == hash ? Review.approved : Review.unreviewed;
+    final first = file.readAsStringSync().trim().split(RegExp(r'\s+')).first;
+    return DriverHash.parse(first) == hash
+        ? Review.approved
+        : Review.unreviewed;
   }
 
   File _object(ObjectId id) => File(
@@ -196,10 +210,10 @@ final class RecordDriver {
   );
 
   /// Adds [bytes] and returns their id. Bytes already here are the same
-  /// object, so nothing is written or recorded. Otherwise the line goes in
-  /// first: a crash between the two leaves a line naming an object that never
-  /// arrived, never an object no line names.
-  ObjectId put(List<int> bytes) {
+  /// object, so nothing is written or recorded. Otherwise the entry goes in
+  /// first: a crash between the two leaves an entry naming an object that
+  /// never arrived, never an object no entry names.
+  ObjectId put(Uint8List bytes) {
     final id = ObjectId.of(bytes);
     final file = _object(id);
     if (file.existsSync()) return id;
@@ -213,7 +227,7 @@ final class RecordDriver {
 
   /// The bytes named [id], or null when they are not here. Throws
   /// [CorruptObject] when they no longer hash to [id].
-  List<int>? get(ObjectId id) {
+  Uint8List? get(ObjectId id) {
     final file = _object(id);
     if (!file.existsSync()) return null;
     final bytes = file.readAsBytesSync();
@@ -223,52 +237,57 @@ final class RecordDriver {
 
   void _record(ObjectId object) {
     dir.createSync(recursive: true);
-    // Locked, so another process writing here chains from this line rather
+    // Locked, so another process writing here chains from this entry rather
     // than from the same one. Closing the file releases the lock.
-    final f = File('${dir.path}/record').openSync(mode: FileMode.append);
+    final f = File('${dir.path}/entries').openSync(mode: FileMode.append);
     try {
       f.lockSync(FileLock.blockingExclusive);
-      final previous = _lastLine(f);
-      final line = RecordLine(previous, hash, review, object);
+      final previous = _lastEntry(f);
+      final entry = RecordEntry(previous, hash, object, review);
       f.setPositionSync(f.lengthSync());
-      f.writeFromSync('$line\n'.codeUnits);
+      f.writeFromSync(entry.encode());
       f.flushSync();
     } finally {
       f.closeSync();
     }
   }
 
-  /// The hash of [f]'s last line. A last line with no newline was torn by a
-  /// crash: it is ended where it stopped and chained from as it is, so
-  /// [firstBrokenLine] finds it rather than the record losing it.
-  LineHash _lastLine(RandomAccessFile f) {
-    final length = f.lengthSync();
-    if (length == 0) return LineHash.origin;
-    final start = length > 4096 ? length - 4096 : 0;
-    f.setPositionSync(start);
-    var tail = String.fromCharCodes(f.readSync(length - start));
-    if (!tail.endsWith('\n')) {
+  /// The hash of [f]'s last entry. A tail shorter than an entry was torn by
+  /// a crash: it is padded with zeros to a whole entry, which cannot parse
+  /// since its review byte is zero, and chained from as it is, so [check]
+  /// reports it rather than the record losing it.
+  EntryHash _lastEntry(RandomAccessFile f) {
+    var length = f.lengthSync();
+    final torn = length % RecordEntry.length;
+    if (torn != 0) {
       f.setPositionSync(length);
-      f.writeFromSync('\n'.codeUnits);
-      tail += '\n';
+      f.writeFromSync(Uint8List(RecordEntry.length - torn));
+      length += RecordEntry.length - torn;
     }
-    final body = tail.substring(0, tail.length - 1);
-    return LineHash.of(body.substring(body.lastIndexOf('\n') + 1));
+    if (length == 0) return EntryHash.origin;
+    f.setPositionSync(length - RecordEntry.length);
+    return EntryHash.of(f.readSync(RecordEntry.length));
   }
 
-  /// The number, from 1, of the first line that does not parse or does not
-  /// name the line before it; null when every line holds.
-  int? firstBrokenLine() {
-    final file = File('${dir.path}/record');
-    if (!file.existsSync()) return null;
-    final lines = String.fromCharCodes(file.readAsBytesSync()).split('\n');
-    var previous = LineHash.origin;
-    // A whole record ends in a newline, so its last piece is empty.
-    for (var i = 0; i < lines.length - 1; i++) {
-      final line = RecordLine.parse(lines[i]);
-      if (line == null || line.previous != previous) return i + 1;
-      previous = LineHash.of(lines[i]);
+  /// Every entry checked against the one before it.
+  RecordCheck check() {
+    final file = File('${dir.path}/entries');
+    if (!file.existsSync()) return const NoRecord();
+    final bytes = file.readAsBytesSync();
+    final broken = <int>[];
+    var previous = EntryHash.origin;
+    var at = 0;
+    for (; at + RecordEntry.length <= bytes.length; at += RecordEntry.length) {
+      final raw = Uint8List.sublistView(bytes, at, at + RecordEntry.length);
+      final entry = RecordEntry.parse(raw);
+      if (entry == null || entry.previous != previous) {
+        broken.add(at ~/ RecordEntry.length + 1);
+      }
+      previous = EntryHash.of(raw);
     }
-    return lines.last.isEmpty ? null : lines.length;
+    final torn = bytes.length - at;
+    return broken.isEmpty && torn == 0
+        ? Intact(at ~/ RecordEntry.length, previous)
+        : Broken(broken, torn);
   }
 }
