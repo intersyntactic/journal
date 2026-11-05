@@ -40,9 +40,9 @@ void main() {
   File object(ObjectId id) => File(
     '${dir.path}/objects/${id.hex.substring(0, 2)}/${id.hex.substring(2)}',
   );
-  void putAll(String prefix, int n) {
+  void addAll(String prefix, int n) {
     for (var i = 0; i < n; i++) {
-      driver.put(bytesOf('$prefix $i'));
+      driver.add(bytesOf('$prefix $i'));
     }
   }
 
@@ -79,22 +79,31 @@ void main() {
   });
 
   group('objects', () {
-    test('come back as they went in; sent twice, one object, two entries', () {
-      final id = driver.put(bytesOf('what went up'));
+    test('come back as they went in; added twice, one object, two entries', () {
+      final id = driver.add(bytesOf('what went up'));
       expect(driver.get(id), bytesOf('what went up'));
-      expect(driver.put(bytesOf('what went up')), id);
+      expect(driver.add(bytesOf('what went up')), id);
       expect(entriesBytes().length, 2 * RecordEntry.length);
       final objects = Directory('${dir.path}/objects')
           .listSync(recursive: true);
       expect(objects.whereType<File>().length, 1);
     });
 
-    test('that no longer hash to their name throw, until put again', () {
-      final id = driver.put(bytesOf('what went up'));
+    test('that no longer hash to their name throw, until stored again', () {
+      final id = driver.add(bytesOf('what went up'));
       object(id).writeAsStringSync('edited');
       expect(() => driver.get(id), throwsA(isA<CorruptObject>()));
-      driver.put(bytesOf('what went up'));
+      driver.store(bytesOf('what went up'));
       expect(driver.get(id), bytesOf('what went up'));
+      expect(entriesBytes().length, RecordEntry.length);
+    });
+
+    test('stored, are kept with no entry, under the id add gives them', () {
+      final id = driver.store(bytesOf('a piece'));
+      expect(driver.get(id), bytesOf('a piece'));
+      expect(driver.check(), isA<NoRecord>());
+      expect(driver.add(bytesOf('a piece')), id);
+      expect((driver.check() as Intact).count, 1);
     });
   });
 
@@ -103,7 +112,7 @@ void main() {
       expect(() => RecordDriver.open(dir), throwsStateError);
       driver.close();
       RecordDriver.open(dir)!
-        ..put(bytesOf('after'))
+        ..add(bytesOf('after'))
         ..close();
       expect(driver.check(), isA<Intact>());
     });
@@ -124,14 +133,16 @@ void main() {
 
     test('a closed driver writes nothing', () {
       driver.close();
-      expect(() => driver.put(bytesOf('late')), throwsStateError);
+      expect(() => driver.add(bytesOf('late')), throwsStateError);
+      expect(() => driver.store(bytesOf('late')), throwsStateError);
       expect(entries().existsSync(), isFalse);
+      expect(Directory('${dir.path}/objects').existsSync(), isFalse);
     });
   });
 
   group('the record', () {
-    test('holds one 96-byte entry per put: before, driver, object', () {
-      final id = driver.put(bytesOf('one'));
+    test('holds one 96-byte entry per call: before, driver, object', () {
+      final id = driver.add(bytesOf('one'));
       expect(entriesBytes().length, 96);
       final entry = RecordEntry.parse(entriesBytes())!;
       expect(entry.previous, EntryHash.origin);
@@ -149,11 +160,11 @@ void main() {
     });
 
     test('an approval writes nothing, and covers what was already written', () {
-      driver.put(bytesOf('same'));
+      driver.add(bytesOf('same'));
       File('${dir.path}/approved').writeAsStringSync('${driver.hash.hex}  -\n');
-      driver.put(bytesOf('same'));
+      driver.add(bytesOf('same'));
       final bytes = entriesBytes();
-      // Put before and after the approval, the two entries differ only in
+      // Added before and after the approval, the two entries differ only in
       // the entry each names before it.
       expect(
         Uint8List.sublistView(bytes, 32, 96),
@@ -171,7 +182,7 @@ void main() {
     });
 
     test('is Intact with the last entry as its head', () {
-      putAll('step', 5);
+      addAll('step', 5);
       final bytes = entriesBytes();
       final check = driver.check() as Intact;
       expect(check.count, 5);
@@ -182,7 +193,7 @@ void main() {
     });
 
     test('breaks at the entry after one that was changed', () {
-      putAll('step', 5);
+      addAll('step', 5);
       entries().writeAsBytesSync(entriesBytes()..[96 * 2 + 70] ^= 1);
       final check = driver.check() as Broken;
       expect(
@@ -196,8 +207,8 @@ void main() {
       );
     });
 
-    test('names an entry whose object is gone, until it is put again', () {
-      putAll('step', 3);
+    test('names an entry whose object is gone, until it is stored again', () {
+      addAll('step', 3);
       final gone = RecordEntry.parse(
         Uint8List.sublistView(entriesBytes(), 96, 96 * 2),
       )!.object;
@@ -212,12 +223,31 @@ void main() {
         ],
       );
 
-      driver.put(bytesOf('step 1'));
-      expect((driver.check() as Intact).count, 4);
+      // Stored, not added: writing it back is not something crossing.
+      driver.store(bytesOf('step 1'));
+      expect((driver.check() as Intact).count, 3);
+    });
+
+    test('takes the entry before the object, so a failed object is named', () {
+      final objects = Directory('${dir.path}/objects')..createSync();
+      Process.runSync('chmod', ['555', objects.path]);
+      addTearDown(() => Process.runSync('chmod', ['755', objects.path]));
+      expect(
+        () => driver.add(bytesOf('cannot be kept')),
+        throwsA(isA<FileSystemException>()),
+      );
+      final check = driver.check() as Broken;
+      expect(
+        [check.entries, check.missing],
+        [
+          <int>[],
+          [1],
+        ],
+      );
     });
 
     test('still chains with entries cut from the end; only the head tells', () {
-      putAll('step', 5);
+      addAll('step', 5);
       final head = (driver.check() as Intact).head;
       entries().writeAsBytesSync(entriesBytes().sublist(0, 96 * 3));
       final check = driver.check() as Intact;
@@ -226,7 +256,7 @@ void main() {
     });
 
     test('reports a torn tail, then its padded entry, and checks past it', () {
-      putAll('before', 3);
+      addAll('before', 3);
       entries().writeAsBytesSync(entriesBytes().sublist(0, 96 * 2 + 50));
       var check = driver.check() as Broken;
       expect(
@@ -236,7 +266,7 @@ void main() {
 
       // Padded with zeros, entry 3 still names entry 2, but its object id
       // was cut short and names nothing.
-      putAll('after', 3);
+      addAll('after', 3);
       check = driver.check() as Broken;
       expect(
         [check.entries, check.torn, check.missing],
@@ -260,7 +290,7 @@ void main() {
 
     test("the README's bash finds what check() finds", () {
       final script = readmeBlock('directory, in bash:');
-      putAll('step', 5);
+      addAll('step', 5);
       expect(
         bash(script, dir).trim(),
         '5 entries, head ${(driver.check() as Intact).head.hex}',
@@ -280,12 +310,12 @@ void main() {
 
     test("the README's bash finds what check() finds at a torn entry", () {
       final script = readmeBlock('directory, in bash:');
-      putAll('before', 3);
+      addAll('before', 3);
       entries().writeAsBytesSync(entriesBytes().sublist(0, 96 * 2 + 50));
       var check = driver.check() as Broken;
       expect(bashFinds(script, dir), [check.entries, check.missing, 50]);
 
-      putAll('after', 2);
+      addAll('after', 2);
       check = driver.check() as Broken;
       expect(bashFinds(script, dir), [check.entries, check.missing, 0]);
       expect(check.missing, [3]);

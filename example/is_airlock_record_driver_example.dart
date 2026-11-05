@@ -13,7 +13,7 @@ void main() {
   final checked = driver.approved().contains(driver.hash);
   print('driver ${driver.hash} is ${checked ? 'approved' : 'unreviewed'}');
 
-  final id = driver.put(utf8.encode('what went up'));
+  final id = driver.add(utf8.encode('what went up'));
   print('stored as $id');
   print('read back: ${utf8.decode(driver.get(id)!)}');
   print('record intact: ${driver.check() is Intact}');
