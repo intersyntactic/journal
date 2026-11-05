@@ -13,18 +13,17 @@
 /// decides them), whether or not they are already stored. An entry says
 /// nothing of what the bytes are: whether they went out, came in or were
 /// refused is for the caller to write into them. Each is added before its
-/// object. An entry is 97 bytes ([RecordEntry]):
-/// the hash of the entry before it, this driver's own hash, the object's id,
-/// and a byte saying whether the person approved that hash. An entry that is
-/// changed or removed breaks the chain at the entry after it, and an entry
-/// whose object is not here is named too ([RecordDriver.check]). The chain
-/// is a checksum against damage and drift, not proof against someone set on
-/// editing it: entries cut from the end leave a shorter record that still
-/// chains, and sha256 has no secret, so whoever can write the file can
-/// recompute it. So run what the record
-/// watches as a user that can write neither this directory, this driver's
-/// code nor `approved`, in a process that cannot reload this driver: a
-/// driver reloaded in place keeps the [RecordDriver.hash] it opened with.
+/// object. An entry is three names, 96 bytes ([RecordEntry]): the entry
+/// before it, this driver's code and the object. An entry that is changed or
+/// removed breaks the chain at the entry after it, and an entry whose object
+/// is not here is named too ([RecordDriver.check]). The chain is a checksum
+/// against damage and drift, not proof against someone set on editing it:
+/// entries cut from the end leave a shorter record that still chains, and
+/// sha256 has no secret, so whoever can write the file can recompute it. So
+/// run what the record watches as a user that can write neither this
+/// directory, this driver's code nor `approved`, in a process that cannot
+/// reload this driver: a driver reloaded in place keeps the
+/// [RecordDriver.hash] it opened with.
 ///
 /// ONE WRITER: [RecordDriver.open] claims the directory for its process by
 /// creating `writer.<pid>` there only if it is absent, so no second driver
@@ -40,8 +39,10 @@
 ///     (cd lib && find . -type f -name '*.dart' -print0 |
 ///       LC_ALL=C sort -z | xargs -0 shasum -a 256 | shasum -a 256)
 ///
-/// The hash they approve goes in the `approved` file beside the record. This
-/// driver reads that file and never writes it.
+/// The hashes they approve go in the `approved` file beside the record, and
+/// whether an entry came from code they checked is read from it whenever
+/// the record is read ([RecordDriver.approved]), never written into the
+/// entry. This driver reads that file and never writes it.
 ///
 /// It imports `dart:io`, `dart:isolate`, `dart:typed_data` and
 /// `is_content_id`, which holds the sha256 every name is made with and
@@ -82,9 +83,10 @@ final class EntryHash extends Sha256Name {
   /// What the first entry names as the entry before it: the sha256 of the
   /// record format's name, so a record in another format breaks at its first
   /// entry, and anyone can compute it with
-  /// `printf 'is_airlock_record_driver/1' | shasum -a 256`.
+  /// `printf 'is_airlock_record_driver/2' | shasum -a 256`. Format 1 ended
+  /// each entry with a review byte.
   static final origin = EntryHash.of(
-    Uint8List.fromList('is_airlock_record_driver/1'.codeUnits),
+    Uint8List.fromList('is_airlock_record_driver/2'.codeUnits),
   );
 }
 
@@ -105,50 +107,30 @@ final class DriverHash extends Sha256Name {
       digest.length == 32 ? DriverHash._(digest) : null;
 }
 
-/// Whether the driver that wrote an entry was the one the person approved.
-/// Its byte ends the entry, and neither is zero, so an entry torn and padded
-/// with zeros never reads as either.
-enum Review {
-  approved(0x41), // 'A'
-  unreviewed(0x55); // 'U'
-
-  const Review(this.byte);
-  final int byte;
-
-  /// The review [byte] stands for; null for any other byte.
-  static Review? fromByte(int byte) {
-    for (final r in values) {
-      if (r.byte == byte) return r;
-    }
-    return null;
-  }
-}
-
-/// One entry of the record: `previous │ driver │ object │ review`, 32 + 32 +
-/// 32 + 1 bytes. The review byte is last, so an entry torn anywhere is
-/// missing it.
+/// One entry of the record, three names: `previous │ driver │ object`, 32
+/// bytes each. Whether the person approved [driver] is not in it: that is
+/// read from `approved` whenever the record is read
+/// ([RecordDriver.approved]), so approving a hash covers what it already
+/// wrote and removing it takes that back.
 final class RecordEntry {
-  const RecordEntry(this.previous, this.driver, this.object, this.review);
+  const RecordEntry(this.previous, this.driver, this.object);
 
   /// An entry's length in bytes.
-  static const length = 97;
+  static const length = 96;
 
   final EntryHash previous;
   final DriverHash driver;
   final ObjectId object;
-  final Review review;
 
-  /// [bytes] as an entry, read back; null unless they are [length] bytes
-  /// ending in a review byte.
+  /// [bytes] as an entry, read back; null unless they are [length] bytes.
   static RecordEntry? parse(Uint8List bytes) {
     if (bytes.length != length) return null;
     return switch ((
       EntryHash.fromDigest(Uint8List.sublistView(bytes, 0, 32)),
       DriverHash.fromDigest(Uint8List.sublistView(bytes, 32, 64)),
       ObjectId.fromDigest(Uint8List.sublistView(bytes, 64, 96)),
-      Review.fromByte(bytes[96]),
     )) {
-      (final p?, final d?, final o?, final r?) => RecordEntry(p, d, o, r),
+      (final p?, final d?, final o?) => RecordEntry(p, d, o),
       _ => null,
     };
   }
@@ -157,8 +139,7 @@ final class RecordEntry {
   Uint8List encode() => Uint8List(length)
     ..setAll(0, previous.bytes)
     ..setAll(32, driver.bytes)
-    ..setAll(64, object.bytes)
-    ..[96] = review.byte;
+    ..setAll(64, object.bytes);
 }
 
 /// What [RecordDriver.check] found.
@@ -181,14 +162,14 @@ final class Intact extends RecordCheck {
   final EntryHash head;
 }
 
-/// The [entries], numbered from 1, that do not parse or do not name the
-/// entry before them: all of them, since checking goes on past a break,
-/// each entry against the bytes before it as they are. [torn] counts the
-/// bytes after the last whole entry, left by a write a crash cut short.
-/// [missing] numbers the entries whose object is not in `objects/`: a crash
-/// between an entry and its object, an object removed since, or a put still
-/// under way in another process. A [RecordDriver.put] of those bytes writes
-/// the object again.
+/// The [entries], numbered from 1, that do not name the entry before them:
+/// all of them, since checking goes on past a break, each entry against the
+/// bytes before it as they are. [torn] counts the bytes after the last whole
+/// entry, left by a write a crash cut short. [missing] numbers the entries
+/// whose object is not in `objects/`: a crash between an entry and its
+/// object, an object removed since, a put still under way in another
+/// process, or a torn entry padded with zeros, whose object id was cut
+/// short. A [RecordDriver.put] of those bytes writes the object again.
 final class Broken extends RecordCheck {
   const Broken(this.entries, this.torn, this.missing);
   final List<int> entries;
@@ -287,16 +268,17 @@ final class RecordDriver {
     return DriverHash.of(Uint8List.fromList(listing.toString().codeUnits));
   }
 
-  /// Whether this driver is the one in `approved`, read at every entry so an
-  /// approval counts from the next entry on. Only the file's first word is
-  /// read, so the line `shasum` prints (`<hash>  -`) can go in as it is.
-  Review get review {
+  /// The driver hashes the person has approved: the first word of each line
+  /// of `approved`, so the line `shasum` prints (`<hash>  -`) goes in as it
+  /// is, and the rest of a line is theirs. Read each time it is asked: an
+  /// entry came from code they checked when its [RecordEntry.driver] is here.
+  Set<DriverHash> approved() {
     final file = File('${dir.path}/approved');
-    if (!file.existsSync()) return Review.unreviewed;
-    final first = file.readAsStringSync().trim().split(RegExp(r'\s+')).first;
-    return DriverHash.parse(first) == hash
-        ? Review.approved
-        : Review.unreviewed;
+    if (!file.existsSync()) return const {};
+    return {
+      for (final line in file.readAsLinesSync())
+        ?DriverHash.parse(line.trim().split(RegExp(r'\s+')).first),
+    };
   }
 
   File _object(ObjectId id) => File(
@@ -344,7 +326,7 @@ final class RecordDriver {
     try {
       f.lockSync(FileLock.blockingExclusive);
       final previous = _lastEntry(f);
-      final entry = RecordEntry(previous, hash, object, review);
+      final entry = RecordEntry(previous, hash, object);
       f.setPositionSync(f.lengthSync());
       f.writeFromSync(entry.encode());
       f.flushSync();
@@ -354,9 +336,10 @@ final class RecordDriver {
   }
 
   /// The hash of [f]'s last entry. A tail shorter than an entry was torn by
-  /// a crash: it is padded with zeros to a whole entry, which cannot parse
-  /// since its review byte is zero, and chained from as it is, so [check]
-  /// reports it rather than the record losing it.
+  /// a crash: it is padded with zeros to a whole entry and chained from as it
+  /// is, so [check] reports it rather than the record losing it. Its object
+  /// id, cut short and padded, names no object here unless the zeros
+  /// completed it, and then the entry is the one that was being written.
   EntryHash _lastEntry(RandomAccessFile f) {
     var length = f.lengthSync();
     final torn = length % RecordEntry.length;
@@ -385,13 +368,12 @@ final class RecordDriver {
     for (; at + RecordEntry.length <= bytes.length; at += RecordEntry.length) {
       final n = at ~/ RecordEntry.length + 1;
       final raw = Uint8List.sublistView(bytes, at, at + RecordEntry.length);
-      final entry = RecordEntry.parse(raw);
-      if (entry == null || entry.previous != previous) broken.add(n);
-      if (entry != null &&
-          !here.putIfAbsent(
-            entry.object,
-            () => _object(entry.object).existsSync(),
-          )) {
+      final entry = RecordEntry.parse(raw)!;
+      if (entry.previous != previous) broken.add(n);
+      if (!here.putIfAbsent(
+        entry.object,
+        () => _object(entry.object).existsSync(),
+      )) {
         missing.add(n);
       }
       previous = EntryHash.of(raw);

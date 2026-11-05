@@ -66,7 +66,7 @@ void main() {
 
     test("the record's origin is the sha256 of its format's name", () {
       final printed = bash(
-        "printf 'is_airlock_record_driver/1' | shasum -a 256",
+        "printf 'is_airlock_record_driver/2' | shasum -a 256",
         dir,
       );
       expect(EntryHash.origin.hex, printed.substring(0, 64));
@@ -130,29 +130,37 @@ void main() {
   });
 
   group('the record', () {
-    test('holds one 97-byte entry per object, its review byte last', () {
+    test('holds one 96-byte entry per put: before, driver, object', () {
       final id = driver.put(bytesOf('one'));
+      expect(entriesBytes().length, 96);
       final entry = RecordEntry.parse(entriesBytes())!;
       expect(entry.previous, EntryHash.origin);
       expect(entry.driver, driver.hash);
       expect(entry.object, id);
-      expect(entry.review, Review.unreviewed);
-      expect(entriesBytes().last, 0x55);
     });
 
-    test('says approved from the entry after the shasum line goes in', () {
-      driver.put(bytesOf('before'));
+    test('approved holds the first word of each line of approved', () {
+      expect(driver.approved(), isEmpty);
+      final other = DriverHash.parse(ObjectId.of(bytesOf('another')).hex)!;
+      File('${dir.path}/approved').writeAsStringSync(
+        '${driver.hash.hex}  -\n\n  ${other.hex} checked 5 Nov\nnot a hash\n',
+      );
+      expect(driver.approved(), {driver.hash, other});
+    });
+
+    test('an approval writes nothing, and covers what was already written', () {
+      driver.put(bytesOf('same'));
       File('${dir.path}/approved').writeAsStringSync('${driver.hash.hex}  -\n');
-      driver.put(bytesOf('after'));
+      driver.put(bytesOf('same'));
       final bytes = entriesBytes();
-      expect([bytes[96], bytes[193]], [0x55, 0x41]);
-    });
-
-    test('says unreviewed for any other hash in approved', () {
-      File('${dir.path}/approved')
-          .writeAsStringSync(ObjectId.of(bytesOf('another driver')).hex);
-      driver.put(bytesOf('one'));
-      expect(entriesBytes().last, 0x55);
+      // Put before and after the approval, the two entries differ only in
+      // the entry each names before it.
+      expect(
+        Uint8List.sublistView(bytes, 32, 96),
+        Uint8List.sublistView(bytes, 96 + 32, 96 * 2),
+      );
+      final first = RecordEntry.parse(Uint8List.sublistView(bytes, 0, 96))!;
+      expect(driver.approved(), contains(first.driver));
     });
 
     test('is NoRecord before anything is written, Intact when empty', () {
@@ -169,13 +177,13 @@ void main() {
       expect(check.count, 5);
       expect(
         check.head,
-        EntryHash.of(Uint8List.sublistView(bytes, bytes.length - 97)),
+        EntryHash.of(Uint8List.sublistView(bytes, bytes.length - 96)),
       );
     });
 
     test('breaks at the entry after one that was changed', () {
       putAll('step', 5);
-      entries().writeAsBytesSync(entriesBytes()..[97 * 2 + 70] ^= 1);
+      entries().writeAsBytesSync(entriesBytes()..[96 * 2 + 70] ^= 1);
       final check = driver.check() as Broken;
       expect(
         [check.entries, check.torn, check.missing],
@@ -191,7 +199,7 @@ void main() {
     test('names an entry whose object is gone, until it is put again', () {
       putAll('step', 3);
       final gone = RecordEntry.parse(
-        Uint8List.sublistView(entriesBytes(), 97, 97 * 2),
+        Uint8List.sublistView(entriesBytes(), 96, 96 * 2),
       )!.object;
       object(gone).deleteSync();
       final check = driver.check() as Broken;
@@ -211,7 +219,7 @@ void main() {
     test('still chains with entries cut from the end; only the head tells', () {
       putAll('step', 5);
       final head = (driver.check() as Intact).head;
-      entries().writeAsBytesSync(entriesBytes().sublist(0, 97 * 3));
+      entries().writeAsBytesSync(entriesBytes().sublist(0, 96 * 3));
       final check = driver.check() as Intact;
       expect(check.count, 3);
       expect(check.head, isNot(head));
@@ -219,31 +227,33 @@ void main() {
 
     test('reports a torn tail, then its padded entry, and checks past it', () {
       putAll('before', 3);
-      entries().writeAsBytesSync(entriesBytes().sublist(0, 97 * 2 + 50));
+      entries().writeAsBytesSync(entriesBytes().sublist(0, 96 * 2 + 50));
       var check = driver.check() as Broken;
       expect(
         [check.entries, check.torn, check.missing],
         [<int>[], 50, <int>[]],
       );
 
+      // Padded with zeros, entry 3 still names entry 2, but its object id
+      // was cut short and names nothing.
       putAll('after', 3);
       check = driver.check() as Broken;
       expect(
         [check.entries, check.torn, check.missing],
         [
-          [3],
-          0,
           <int>[],
+          0,
+          [3],
         ],
       );
 
-      entries().writeAsBytesSync(entriesBytes()..[97 * 4 + 70] ^= 1);
+      entries().writeAsBytesSync(entriesBytes()..[96 * 4 + 70] ^= 1);
       check = driver.check() as Broken;
       expect(
         [check.entries, check.missing],
         [
-          [3, 6],
-          [5],
+          [6],
+          [3, 5],
         ],
       );
     });
@@ -256,9 +266,9 @@ void main() {
         '5 entries, head ${(driver.check() as Intact).head.hex}',
       );
 
-      entries().writeAsBytesSync(entriesBytes()..[97 + 70] ^= 1);
+      entries().writeAsBytesSync(entriesBytes()..[96 + 70] ^= 1);
       final check = driver.check() as Broken;
-      expect(bashFinds(script, dir), [check.entries, check.missing]);
+      expect(bashFinds(script, dir), [check.entries, check.missing, 0]);
       expect(
         [check.entries, check.missing],
         [
@@ -268,36 +278,36 @@ void main() {
       );
     });
 
-    test("the README's bash skips the object of an entry a crash tore", () {
+    test("the README's bash finds what check() finds at a torn entry", () {
+      final script = readmeBlock('directory, in bash:');
       putAll('before', 3);
-      entries().writeAsBytesSync(entriesBytes().sublist(0, 97 * 2 + 50));
+      entries().writeAsBytesSync(entriesBytes().sublist(0, 96 * 2 + 50));
+      var check = driver.check() as Broken;
+      expect(bashFinds(script, dir), [check.entries, check.missing, 50]);
+
       putAll('after', 2);
-      // Entry 3 is padded with zeros: no review byte, and an object id of
-      // zeros that names nothing, which neither check counts as missing.
-      final check = driver.check() as Broken;
-      expect(bashFinds(readmeBlock('directory, in bash:'), dir), [
-        check.entries,
-        check.missing,
-      ]);
-      expect(
-        [check.entries, check.missing],
-        [
-          [3],
-          <int>[],
-        ],
-      );
+      check = driver.check() as Broken;
+      expect(bashFinds(script, dir), [check.entries, check.missing, 0]);
+      expect(check.missing, [3]);
     });
   });
 }
 
-/// The entries the README's bash [script] says are broken, and those it says
-/// have no object, as [Broken.entries] and [Broken.missing] number them.
-List<List<int>> bashFinds(String script, Directory dir) {
+/// What the README's bash [script] finds: the entries it says are broken,
+/// those it says have no object, as [Broken.entries] and [Broken.missing]
+/// number them, and the bytes after the last whole entry ([Broken.torn]).
+List<Object> bashFinds(String script, Directory dir) {
   final printed = bash(script, dir);
   List<int> numbered(String says) =>
       RegExp('entry (\\d+)$says')
           .allMatches(printed)
           .map((m) => int.parse(m[1]!))
           .toList();
-  return [numbered(' is broken'), numbered("'s object is missing")];
+  final torn = RegExp(r'(\d+) bytes after the last whole entry')
+      .firstMatch(printed);
+  return [
+    numbered(' is broken'),
+    numbered("'s object is missing"),
+    torn == null ? 0 : int.parse(torn[1]!),
+  ];
 }

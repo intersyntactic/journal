@@ -16,7 +16,7 @@ import 'package:is_airlock_record_driver/is_airlock_record_driver.dart';
 void main() {
   final driver = RecordDriver.open(Directory('airlock_record'))!;
   final id = driver.put(utf8.encode('what went up'));
-  print('$id, written by ${driver.hash} (${driver.review.name})');
+  print('$id, written by ${driver.hash}');
   driver.close();
 }
 ```
@@ -33,24 +33,25 @@ One directory, which it only ever adds to:
   caller records bytes before it acts on them (sends, reads or decides them),
   even bytes already stored, added before the object. An entry says nothing of
   what the bytes are: whether they went out, came in or were refused is for
-  the caller to write into them. Each entry is 97 bytes:
+  the caller to write into them. Each entry is three names, 96 bytes:
 
   | bytes | what |
   |---|---|
   | 0–31 | the sha256 of the entry before it |
   | 32–63 | the driver's own hash |
   | 64–95 | the object's id |
-  | 96 | `A` (approved) or `U` (unreviewed) |
 
   The first entry names, as the entry before it, the sha256 of
-  `is_airlock_record_driver/1`, the record format's name. The review byte is
-  last, so an entry torn by a crash is missing it; the driver pads a torn tail
-  with zeros before it writes again, and a zero is neither review.
+  `is_airlock_record_driver/2`, the record format's name. (Format 1 ended each
+  entry with a byte saying whether its driver was approved; see below for why
+  that is read from `approved` instead.) An entry torn by a crash is padded
+  with zeros before the driver writes again, so its object id, cut short,
+  names no object here.
 
 - **`writer.<pid>`**, while a driver has the directory open: see below.
 
-`check()` says which entries do not parse or do not name the entry before
-them, and which name an object that is not in `objects/` (`Broken`), or that
+`check()` says which entries do not name the entry before them, and which
+name an object that is not in `objects/` (`Broken`), or that
 there is no record (`NoRecord`), or that every entry chains and its object is
 here (`Intact`), with the record's `head`: the hash of its last entry. Whether
 an object still holds its bytes is checked each time it is read.
@@ -84,11 +85,14 @@ package's root:
     (cd lib && find . -type f -name '*.dart' -print0 |
       LC_ALL=C sort -z | xargs -0 shasum -a 256 | shasum -a 256)
 
-The driver computes the same hash from its own source when it opens. Write the
-hash you checked to `approved` beside the record (the line `shasum` prints will
-do as it is), and every entry from then on says `A`. Until then, and whenever
-the driver's code changes, its entries say `U`. The driver reads `approved` and
-never writes it.
+The driver computes the same hash from its own source when it opens. Add the
+hash you checked to `approved` beside the record, one per line: the line
+`shasum` prints will do as it is, and anything after the hash on its line is
+yours, such as when you checked it. Every entry names the driver that wrote
+it, so which entries came from code you checked is read from `approved`
+whenever the record is read (`approved()`), never written into the entries:
+approving a hash covers what it already wrote, and deleting its line takes
+that back. The driver reads `approved` and never writes it.
 
 `RecordDriver.open` returns null when the driver cannot compute its hash the
 way that command does: in a build with no source on disk, or when `lib/` holds
@@ -98,19 +102,14 @@ name itself writes nothing.
 The record can be checked without the driver too. From the record's
 directory, in bash:
 
-    p=$(printf 'is_airlock_record_driver/1' | shasum -a 256 | cut -c1-64); n=0
+    p=$(printf 'is_airlock_record_driver/2' | shasum -a 256 | cut -c1-64); n=0
     while read -r e; do
-      n=$((n + 1))
-      case "${#e}:${e:0:64}:${e:192}" in
-        "194:$p:41" | "194:$p:55") ;;
-        *) echo "entry $n is broken" ;;
-      esac
-      case "${#e}:${e:192}" in
-        194:41 | 194:55) o=${e:128:64}
-          [ -f "objects/${o:0:2}/${o:2}" ] || echo "entry $n's object is missing" ;;
-      esac
+      [ ${#e} = 192 ] || { echo "$((${#e} / 2)) bytes after the last whole entry"; break; }
+      n=$((n + 1)); o=${e:128:64}
+      [ "${e:0:64}" = "$p" ] || echo "entry $n is broken"
+      [ -f "objects/${o:0:2}/${o:2}" ] || echo "entry $n's object is missing"
       p=$(printf %s "$e" | xxd -r -p | shasum -a 256 | cut -c1-64)
-    done < <(xxd -p -c 97 entries)
+    done < <(xxd -p -c 96 entries)
     echo "$n entries, head $p"
 
 ## What it imports

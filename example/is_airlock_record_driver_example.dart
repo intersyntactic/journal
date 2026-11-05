@@ -10,7 +10,8 @@ void main() {
     print('this build has no source for the driver to hash');
     return;
   }
-  print('driver ${driver.hash} is ${driver.review.name}');
+  final checked = driver.approved().contains(driver.hash);
+  print('driver ${driver.hash} is ${checked ? 'approved' : 'unreviewed'}');
 
   final id = driver.put(utf8.encode('what went up'));
   print('stored as $id');
