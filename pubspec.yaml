@@ -1,0 +1,16 @@
+name: is_airlock_record_driver
+description: >-
+  The driver that writes the airlock's record: bytes kept under their sha256,
+  and an add-only record of what was written, each line chained to the one
+  before and naming the hash of the driver's own code.
+version: 0.1.0
+repository: https://github.com/intersyntactic/airlock_record_driver
+
+environment:
+  sdk: ^3.13.0
+
+dependencies:
+  crypto: ^3.0.3
+
+dev_dependencies:
+  lints: ^6.1.0
