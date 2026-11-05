@@ -49,70 +49,17 @@ void main() {
   });
   tearDown(() => dir.deleteSync(recursive: true));
 
-  group('sha256', () {
-    test('gives the FIPS 180-4 examples', () {
-      String sha(Uint8List b) => ObjectId.of(b).hex;
-      expect(
-        sha(bytesOf('')),
-        'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
-      );
-      expect(
-        sha(bytesOf('abc')),
-        'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
-      );
-      expect(
-        sha(
-          bytesOf('abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq'),
-        ),
-        '248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1',
-      );
-      expect(
-        sha(Uint8List(1000000)..fillRange(0, 1000000, 0x61)),
-        'cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0',
-      );
-    });
-
-    test('agrees with shasum at every length across the block boundaries', () {
-      final source = Uint8List.fromList([
-        for (var i = 0; i < 130; i++) (i * 167 + 13) & 0xff,
-      ]);
-      for (var n = 0; n <= 130; n++) {
-        File('${dir.path}/m$n').writeAsBytesSync(source.sublist(0, n));
-      }
-      final theirs = {
-        for (final line in LineSplitter.split(bash('shasum -a 256 m*', dir)))
-          line.substring(66): line.substring(0, 64),
-      };
-      for (var n = 0; n <= 130; n++) {
-        expect(
-          ObjectId.of(source.sublist(0, n)).hex,
-          theirs['m$n'],
-          reason: '$n bytes',
-        );
-      }
-    });
-  });
-
   group('names', () {
-    test('parse takes only a lower-case hex sha256', () {
-      final hex = ObjectId.of(bytesOf('x')).hex;
-      expect(ObjectId.parse(hex)?.hex, hex);
-      expect(ObjectId.parse(hex.toUpperCase()), isNull);
-      expect(ObjectId.parse(hex.substring(1)), isNull);
-      expect(ObjectId.parse('$hex\n'), isNull);
-    });
-
-    test('fromDigest takes only 32 bytes', () {
-      expect(ObjectId.fromDigest(Uint8List(32)), isNotNull);
-      expect(ObjectId.fromDigest(Uint8List(31)), isNull);
-      expect(ObjectId.fromDigest(Uint8List(33)), isNull);
-    });
-
-    test('the same 32 bytes as two kinds of name are not equal', () {
-      final digest = ObjectId.of(bytesOf('x')).bytes;
-      expect(ObjectId.fromDigest(digest), isNot(EntryHash.fromDigest(digest)));
-      expect(ObjectId.fromDigest(digest), ObjectId.of(bytesOf('x')));
-    });
+    test(
+      'an object id and an entry hash with the same bytes are not equal',
+      () {
+        final digest = ObjectId.of(bytesOf('x')).bytes;
+        expect(
+          ObjectId.fromDigest(digest),
+          isNot(EntryHash.fromDigest(digest)),
+        );
+      },
+    );
 
     test("the record's origin is the sha256 of its format's name", () {
       final printed = bash(

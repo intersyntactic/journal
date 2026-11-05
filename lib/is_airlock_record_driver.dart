@@ -17,7 +17,10 @@
 /// ([RecordDriver.check]). The chain is a checksum against damage and drift,
 /// not proof against someone set on editing it: entries cut from the end
 /// leave a shorter record that still chains, and sha256 has no secret, so
-/// whoever can write the file can recompute it.
+/// whoever can write the file can recompute it. So run what the record
+/// watches as a user that can write neither this directory, this driver's
+/// code nor `approved`, in a process that cannot reload this driver: a
+/// driver reloaded in place keeps the [RecordDriver.hash] it opened with.
 ///
 /// ONE WRITER: [RecordDriver.open] claims the directory for its process by
 /// creating `writer.<pid>` there only if it is absent, so no second driver
@@ -36,11 +39,12 @@
 /// The hash they approve goes in the `approved` file beside the record. This
 /// driver reads that file and never writes it.
 ///
-/// It imports only `dart:io`, `dart:isolate`, `dart:typed_data` and
-/// `content_id.dart` beside it, which holds the sha256 every name is made
-/// with. No package: everything it imports is part of what the person
-/// checks, and a package's code is outside the hash. An import added here
-/// changes the hash like any other edit, so the person sees it.
+/// It imports `dart:io`, `dart:isolate`, `dart:typed_data` and
+/// `is_content_id`, which holds the sha256 every name is made with and
+/// [ObjectId]. The driver's hash names this package's own code only:
+/// `is_content_id` is pinned by git commit in `pubspec.yaml`, not by hash.
+/// An import added here changes the hash like any other edit, so the person
+/// sees it.
 /// Everything is synchronous: a caller records what it is about to do before
 /// it does it, and one write must not interleave with another.
 library;
@@ -49,12 +53,53 @@ import 'dart:io';
 import 'dart:isolate';
 import 'dart:typed_data';
 
-import 'content_id.dart';
+import 'package:is_content_id/is_content_id.dart';
 
-export 'content_id.dart';
+export 'package:is_content_id/is_content_id.dart';
 
 /// A name `shasum` prints as it is: printable ASCII with no backslash.
 final _plainName = RegExp(r'^[\x20-\x5b\x5d-\x7e]+$');
+
+/// The sha256 of one record entry.
+final class EntryHash extends Sha256Name {
+  EntryHash._(super.digest);
+
+  /// [entry]'s hash.
+  factory EntryHash.of(Uint8List entry) => EntryHash._(sha256(entry));
+
+  static EntryHash? parse(String s) => switch (Sha256Name.digestOfHex(s)) {
+    final d? => EntryHash._(d),
+    null => null,
+  };
+
+  static EntryHash? fromDigest(Uint8List digest) =>
+      digest.length == 32 ? EntryHash._(digest) : null;
+
+  /// What the first entry names as the entry before it: the sha256 of the
+  /// record format's name, so a record in another format breaks at its first
+  /// entry, and anyone can compute it with
+  /// `printf 'is_airlock_record_driver/1' | shasum -a 256`.
+  static final origin = EntryHash.of(
+    Uint8List.fromList('is_airlock_record_driver/1'.codeUnits),
+  );
+}
+
+/// The sha256 of a record driver's own code: of the listing `shasum -a 256`
+/// prints for its `lib/` files.
+final class DriverHash extends Sha256Name {
+  DriverHash._(super.digest);
+
+  /// The hash of [listing].
+  factory DriverHash.of(Uint8List listing) => DriverHash._(sha256(listing));
+
+  static DriverHash? parse(String s) => switch (Sha256Name.digestOfHex(s)) {
+    final d? => DriverHash._(d),
+    null => null,
+  };
+
+  static DriverHash? fromDigest(Uint8List digest) =>
+      digest.length == 32 ? DriverHash._(digest) : null;
+}
 
 /// Whether the driver that wrote an entry was the one the person approved.
 /// Its byte ends the entry, and neither is zero, so an entry torn and padded

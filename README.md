@@ -56,6 +56,14 @@ not proof against someone set on editing it: entries cut from the end leave a
 record that is still `Intact`, and sha256 has no secret, so whoever can write
 the file can recompute it.
 
+Whatever can write the record's directory, the driver's code or `approved` can
+change what the record says, by mistake or otherwise, and the chain cannot
+tell. So run what the record watches as an OS user that cannot write them, in a
+process that cannot reload the driver: a driver reloaded in place keeps the
+hash it computed when it opened. A separate user stops a mistaken program, or
+another writer, from changing the record. It is not a sandbox, and does not
+contain a program set on getting out of it.
+
 There is one writer per directory. `RecordDriver.open` creates `writer.<pid>`
 only if it is absent, so a second driver in the same process, in any isolate,
 cannot open the directory until the first calls `close()`. Dart has no append
@@ -98,8 +106,9 @@ directory, in bash:
 
 ## What it imports
 
-`dart:io`, `dart:isolate`, `dart:typed_data` and its own `content_id.dart`,
-and nothing else, because everything it imports is part of what the person
-checks, and a package's code would be outside the hash. `content_id.dart` holds
-`ObjectId`, `EntryHash`, `DriverHash` and the sha256 they are made with. It
-imports only `dart:typed_data`, so it can be used where `dart:io` cannot.
+`dart:io`, `dart:isolate`, `dart:typed_data` and
+[`is_content_id`](https://github.com/intersyntactic/content_id), which holds
+`ObjectId` and the sha256 every name is made with. The driver re-exports it,
+so importing the driver gives you `ObjectId` too. The driver's hash names the
+driver's own `lib/` only: `is_content_id` is pinned by git commit in
+`pubspec.yaml`, and an app's `pubspec.lock` records the commit it resolved.
