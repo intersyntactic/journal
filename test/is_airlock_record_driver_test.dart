@@ -160,6 +160,16 @@ void main() {
       expect(driver.check(), isA<Intact>());
     });
 
+    test('a folder it cannot write fails as itself, not as already open', () {
+      final locked = Directory('${dir.path}/locked')..createSync();
+      Process.runSync('chmod', ['555', locked.path]);
+      addTearDown(() => Process.runSync('chmod', ['755', locked.path]));
+      expect(
+        () => RecordDriver.open(locked),
+        throwsA(isA<PathAccessException>()),
+      );
+    });
+
     test('another isolate in this process cannot open it', () async {
       await expectLater(openInAnotherIsolate(dir.path), throwsStateError);
     });

@@ -168,7 +168,8 @@ final class RecordDriver {
 
   /// A record driver writing into [dir], which it claims for this process
   /// until [close] (see the library comment). Throws a [StateError] when
-  /// [dir] is already claimed by this process. Null when the driver cannot
+  /// [dir] is already claimed by this process; any other failure to claim it,
+  /// such as a folder it cannot write, throws as itself. Null when the driver cannot
   /// name itself the way the library comment does ([ownHash]): every entry
   /// names the driver that wrote it, and a driver that cannot name itself
   /// writes none.
@@ -179,7 +180,7 @@ final class RecordDriver {
     final writer = File('${dir.path}/writer.$pid');
     try {
       writer.createSync(exclusive: true);
-    } on FileSystemException {
+    } on PathExistsException {
       throw StateError(
         '${dir.path} is already open in this process. If no driver here has '
         'it open, a crashed process with the same id left ${writer.path}; '
