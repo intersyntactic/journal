@@ -1,7 +1,8 @@
 # is_airlock_record_driver
 
-The driver that writes intersyntactic's airlock record: the record of what
-leaves a person's home, written before it goes. This is the one driver whose
+The driver that writes intersyntactic's airlock record: what crosses between a
+person's home and the outside, either way, and every effect the airlock
+decides, each written before anything acts on it. This is the one driver whose
 writes the airlock does not decide, since deciding them would need a record of
 their own. So it is small enough to read in one sitting, and it names the hash
 of its own code in every entry it writes.
@@ -28,9 +29,11 @@ One directory, which it only ever adds to:
   written when that name is absent or no longer holds them, and checked against
   its name whenever it is read (`CorruptObject` if it no longer matches). The same bytes are the
   same object whoever wrote them, so two records merge by copying objects in.
-- **The entries** in `entries`: one each time bytes are about to leave
-  (`put`), even bytes already stored, added before the object. Each entry is
-  97 bytes:
+- **The entries** in `entries`: one for every `put`, that is, each time a
+  caller records bytes before it acts on them (sends, reads or decides them),
+  even bytes already stored, added before the object. An entry says nothing of
+  what the bytes are: whether they went out, came in or were refused is for
+  the caller to write into them. Each entry is 97 bytes:
 
   | bytes | what |
   |---|---|

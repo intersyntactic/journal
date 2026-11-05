@@ -9,8 +9,11 @@
 /// other's objects in.
 ///
 /// THE ENTRIES, `entries`: one for each [RecordDriver.put], that is, each
-/// time bytes are about to leave, whether or not they are already stored.
-/// Each is added before its object. An entry is 97 bytes ([RecordEntry]):
+/// time a caller records bytes before it acts on them (sends, reads or
+/// decides them), whether or not they are already stored. An entry says
+/// nothing of what the bytes are: whether they went out, came in or were
+/// refused is for the caller to write into them. Each is added before its
+/// object. An entry is 97 bytes ([RecordEntry]):
 /// the hash of the entry before it, this driver's own hash, the object's id,
 /// and a byte saying whether the person approved that hash. An entry that is
 /// changed or removed breaks the chain at the entry after it, and an entry
@@ -300,13 +303,14 @@ final class RecordDriver {
     '${dir.path}/objects/${id.hex.substring(0, 2)}/${id.hex.substring(2)}',
   );
 
-  /// Records that [bytes] are about to leave, keeps them, and returns their
-  /// id. Every call adds an entry, so the same bytes sent twice are recorded
-  /// twice. The entry goes in before the object: a crash between the two
-  /// leaves an entry naming an object that never arrived, which [check]
-  /// reports, never an object no entry names. The object is written when it
-  /// is absent or no longer holds these bytes; the temporary file is named
-  /// for this process, which no other driver shares.
+  /// Records [bytes], keeps them, and returns their id. A caller puts what
+  /// it is about to act on before it acts. Every call adds an entry, so the
+  /// same bytes put twice are recorded twice. The entry goes in before the
+  /// object: a crash between the two leaves an entry naming an object that
+  /// never arrived, which [check] reports, never an object no entry names.
+  /// The object is written when it is absent or no longer holds these bytes;
+  /// the temporary file is named for this process, which no other driver
+  /// shares.
   ObjectId put(Uint8List bytes) {
     if (!_open) throw StateError('this driver is closed');
     final id = ObjectId.of(bytes);
