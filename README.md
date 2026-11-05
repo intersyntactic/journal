@@ -115,8 +115,9 @@ directory, in bash:
 ## What it imports
 
 `dart:io`, `dart:isolate`, `dart:typed_data` and
-[`is_content_id`](https://github.com/intersyntactic/content_id), which holds
+[`is_content_id`](https://pub.dev/packages/is_content_id), which holds
 `ObjectId` and the sha256 every name is made with. The driver re-exports it,
 so importing the driver gives you `ObjectId` too. The driver's hash names the
-driver's own `lib/` only: `is_content_id` is pinned by git commit in
-`pubspec.yaml`, and an app's `pubspec.lock` records the commit it resolved.
+driver's own `lib/` only: `is_content_id` comes from pub.dev, and an app's
+`pubspec.lock` records the version it resolved and the sha256 of that
+version's archive.

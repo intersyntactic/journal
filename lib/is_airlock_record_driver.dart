@@ -47,7 +47,8 @@
 /// It imports `dart:io`, `dart:isolate`, `dart:typed_data` and
 /// `is_content_id`, which holds the sha256 every name is made with and
 /// [ObjectId]. The driver's hash names this package's own code only:
-/// `is_content_id` is pinned by git commit in `pubspec.yaml`, not by hash.
+/// `is_content_id` comes from pub.dev, and an app's `pubspec.lock` records
+/// the version it resolved and the sha256 of that version's archive.
 /// An import added here changes the hash like any other edit, so the person
 /// sees it.
 /// Everything is synchronous: a caller records what it is about to do before

@@ -10,10 +10,7 @@ environment:
   sdk: ^3.13.0
 
 dependencies:
-  is_content_id:
-    git:
-      url: git@github.com:intersyntactic/content_id.git
-      ref: c878d99949ce2fb17d25cf5091d6f025f80d2eac
+  is_content_id: ^0.1.0
 
 dev_dependencies:
   lints: ^6.1.0
