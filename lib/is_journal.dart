@@ -1,53 +1,56 @@
-/// The record driver: the one driver whose effects the airlock does not
-/// decide, since deciding them would need a record of their own. It keeps
-/// two things in one directory and only ever adds to them.
+/// A journal: an add-only record of bytes, each entry added before the bytes
+/// are acted on, chained to the entry before it, and naming the hash of the
+/// code that wrote it. In intersyntactic it is the record driver: the one
+/// driver whose effects the airlock does not decide, since deciding them
+/// would need a record of their own. It keeps two things in one directory
+/// and only ever adds to them.
 ///
 /// OBJECTS, `objects/<2>/<62>`: bytes named by their sha256 ([ObjectId]),
 /// kept whole, written when that name is absent or no longer holds them, and
 /// checked against it whenever they are read. The same bytes are the same
-/// object whichever home or driver wrote them, so two stores merge by copying
-/// each other's objects in, and an object missing or damaged here is
-/// restored by copying its file in from another copy of the record.
+/// object whichever home or journal wrote them, so two journals merge by
+/// copying each other's objects in, and an object missing or damaged here is
+/// restored by copying its file in from another copy of the journal.
 ///
-/// THE ENTRIES, `entries`: one for each [RecordDriver.add], that is, each
-/// time a caller records bytes before it acts on them (sends, reads or
-/// decides them), whether or not they are already stored. An entry says
-/// nothing of what the bytes are: whether they went out, came in or were
-/// refused is for the caller to write into them. Each is added before its
-/// object. An entry is three names, 96 bytes ([RecordEntry]): the entry
-/// before it, this driver's code and the object. An entry that is changed or
+/// THE ENTRIES, `entries`: one for each [Journal.add], that is, each time a
+/// caller records bytes before it acts on them (sends, reads or decides
+/// them), whether or not they are already stored. An entry says nothing of
+/// what the bytes are: whether they went out, came in or were refused is for
+/// the caller to write into them. Each is added before its object. An entry
+/// is three names, 96 bytes ([JournalEntry]): the entry before it, the code
+/// that wrote it ([CodeHash]) and the object. An entry that is changed or
 /// removed breaks the chain at the entry after it, and an entry whose object
-/// is not here is named too ([RecordDriver.check]). The chain is a checksum
+/// is not here is named too ([Journal.check]). The chain is a checksum
 /// against damage and drift, not proof against someone set on editing it:
-/// entries cut from the end leave a shorter record that still chains, and
+/// entries cut from the end leave a shorter journal that still chains, and
 /// sha256 has no secret, so whoever can write the file can recompute it. So
-/// run what the record watches as a user that can write neither this
-/// directory, this driver's code nor `approved`, in a process that cannot
-/// reload this driver: a driver reloaded in place keeps the
-/// [RecordDriver.hash] it opened with.
+/// run what the journal watches as a user that can write neither this
+/// directory, this package's code nor `approved`, in a process that cannot
+/// reload this code: a journal reloaded in place keeps the
+/// [Journal.codeHash] it opened with.
 ///
-/// ONE WRITER: [RecordDriver.open] claims the directory for its process by
-/// creating `writer.<pid>` there only if it is absent, so no second driver
-/// in the same process, in any isolate, can open it until
-/// [RecordDriver.close]. Dart has no append that cannot overwrite, and two
-/// writers in one process would write over each other's entries. Processes
-/// take turns at each entry through a lock on `entries`.
+/// ONE WRITER: [Journal.open] claims the directory for its process by
+/// creating `writer.<pid>` there only if it is absent, so no second journal
+/// in the same process, in any isolate, can open it until [Journal.close].
+/// Dart has no append that cannot overwrite, and two writers in one process
+/// would write over each other's entries. Processes take turns at each entry
+/// through a lock on `entries`.
 ///
-/// THE DRIVER'S HASH is the sha256 of what `shasum -a 256` prints for this
+/// THE CODE HASH is the sha256 of what `shasum -a 256` prints for this
 /// package's `lib/` files, so the person can compute it without running this
 /// code, from the package's root:
 ///
 ///     (cd lib && find . -type f -name '*.dart' -print0 |
 ///       LC_ALL=C sort -z | xargs -0 shasum -a 256 | shasum -a 256)
 ///
-/// The hashes they approve go in the `approved` file beside the record, and
+/// The hashes they approve go in the `approved` file beside the entries, and
 /// whether an entry came from code they checked is read from it whenever
-/// the record is read ([RecordDriver.approved]), never written into the
-/// entry. This driver reads that file and never writes it.
+/// the journal is read ([Journal.approved]), never written into the entry.
+/// The journal reads that file and never writes it.
 ///
 /// It imports `dart:io`, `dart:isolate`, `dart:typed_data` and
 /// `is_content_id`, which holds the sha256 every name is made with and
-/// [ObjectId]. The driver's hash names this package's own code only:
+/// [ObjectId]. The code hash names this package's own code only:
 /// `is_content_id` comes from pub.dev, and an app's `pubspec.lock` records
 /// the version it resolved and the sha256 of that version's archive.
 /// An import added here changes the hash like any other edit, so the person
@@ -67,7 +70,7 @@ export 'package:is_content_id/is_content_id.dart';
 /// A name `shasum` prints as it is: printable ASCII with no backslash.
 final _plainName = RegExp(r'^[\x20-\x5b\x5d-\x7e]+$');
 
-/// The sha256 of one record entry.
+/// The sha256 of one journal entry.
 final class EntryHash extends Sha256Name {
   EntryHash._(super.digest);
 
@@ -83,82 +86,83 @@ final class EntryHash extends Sha256Name {
       digest.length == 32 ? EntryHash._(digest) : null;
 
   /// What the first entry names as the entry before it: the sha256 of the
-  /// record format's name, so a record in another format breaks at its first
-  /// entry, and anyone can compute it with
-  /// `printf 'is_airlock_record_driver/2' | shasum -a 256`. Format 1 ended
-  /// each entry with a review byte.
+  /// journal format's name, so a journal in another format breaks at its
+  /// first entry, and anyone can compute it with
+  /// `printf 'is_journal/1' | shasum -a 256`. Before this package was named,
+  /// its records began from `is_airlock_record_driver/1` (97-byte entries
+  /// ending in a review byte) or `/2` (this format).
   static final origin = EntryHash.of(
-    Uint8List.fromList('is_airlock_record_driver/2'.codeUnits),
+    Uint8List.fromList('is_journal/1'.codeUnits),
   );
 }
 
-/// The sha256 of a record driver's own code: of the listing `shasum -a 256`
-/// prints for its `lib/` files.
-final class DriverHash extends Sha256Name {
-  DriverHash._(super.digest);
+/// The sha256 of the code that writes a journal: of the listing
+/// `shasum -a 256` prints for its package's `lib/` files.
+final class CodeHash extends Sha256Name {
+  CodeHash._(super.digest);
 
   /// The hash of [listing].
-  factory DriverHash.of(Uint8List listing) => DriverHash._(sha256(listing));
+  factory CodeHash.of(Uint8List listing) => CodeHash._(sha256(listing));
 
-  static DriverHash? parse(String s) => switch (Sha256Name.digestOfHex(s)) {
-    final d? => DriverHash._(d),
+  static CodeHash? parse(String s) => switch (Sha256Name.digestOfHex(s)) {
+    final d? => CodeHash._(d),
     null => null,
   };
 
-  static DriverHash? fromDigest(Uint8List digest) =>
-      digest.length == 32 ? DriverHash._(digest) : null;
+  static CodeHash? fromDigest(Uint8List digest) =>
+      digest.length == 32 ? CodeHash._(digest) : null;
 }
 
-/// One entry of the record, three names: `previous │ driver │ object`, 32
-/// bytes each. Whether the person approved [driver] is not in it: that is
-/// read from `approved` whenever the record is read
-/// ([RecordDriver.approved]), so approving a hash covers what it already
-/// wrote and removing it takes that back.
-final class RecordEntry {
-  const RecordEntry(this.previous, this.driver, this.object);
+/// One entry of a journal, three names: `previous │ code │ object`, 32 bytes
+/// each. Whether the person approved [code] is not in it: that is read from
+/// `approved` whenever the journal is read ([Journal.approved]), so
+/// approving a hash covers what it already wrote and removing it takes that
+/// back.
+final class JournalEntry {
+  const JournalEntry(this.previous, this.code, this.object);
 
   /// An entry's length in bytes.
   static const length = 96;
 
   final EntryHash previous;
-  final DriverHash driver;
+  final CodeHash code;
   final ObjectId object;
 
   /// [bytes] as an entry, read back; null unless they are [length] bytes.
-  static RecordEntry? parse(Uint8List bytes) {
+  static JournalEntry? parse(Uint8List bytes) {
     if (bytes.length != length) return null;
     return switch ((
       EntryHash.fromDigest(Uint8List.sublistView(bytes, 0, 32)),
-      DriverHash.fromDigest(Uint8List.sublistView(bytes, 32, 64)),
+      CodeHash.fromDigest(Uint8List.sublistView(bytes, 32, 64)),
       ObjectId.fromDigest(Uint8List.sublistView(bytes, 64, 96)),
     )) {
-      (final p?, final d?, final o?) => RecordEntry(p, d, o),
+      (final p?, final c?, final o?) => JournalEntry(p, c, o),
       _ => null,
     };
   }
 
-  /// The entry's [length] bytes, as the record keeps them.
+  /// The entry's [length] bytes, as the journal keeps them.
   Uint8List encode() => Uint8List(length)
     ..setAll(0, previous.bytes)
-    ..setAll(32, driver.bytes)
+    ..setAll(32, code.bytes)
     ..setAll(64, object.bytes);
 }
 
-/// What [RecordDriver.check] found.
-sealed class RecordCheck {
-  const RecordCheck();
+/// What [Journal.check] found.
+sealed class JournalCheck {
+  const JournalCheck();
 }
 
-/// There is no record: nothing was written here, or the record was removed.
-final class NoRecord extends RecordCheck {
-  const NoRecord();
+/// There is no journal: nothing was written here, or it was removed.
+final class NoJournal extends JournalCheck {
+  const NoJournal();
 }
 
 /// Every one of [count] entries names the entry before it, and an object
 /// that is here. [head] is the last entry's hash ([EntryHash.origin] when
-/// there are none). Entries cut from the end leave a record that is still
+/// there are none). Entries cut from the end leave a journal that is still
 /// intact.
-final class Intact extends RecordCheck {
+final class Intact extends JournalCheck {
   const Intact(this.count, this.head);
   final int count;
   final EntryHash head;
@@ -169,11 +173,11 @@ final class Intact extends RecordCheck {
 /// bytes before it as they are. [torn] counts the bytes after the last whole
 /// entry, left by a write a crash cut short. [missing] numbers the entries
 /// whose object is not in `objects/`: a crash between an entry and its
-/// object, an object removed since, an [RecordDriver.add] still under way
-/// in another process, or a torn entry padded with zeros, whose object id
-/// was cut short. Copying the object's file in from another copy of the
-/// record restores it.
-final class Broken extends RecordCheck {
+/// object, an object removed since, an [Journal.add] still under way in
+/// another process, or a torn entry padded with zeros, whose object id was
+/// cut short. Copying the object's file in from another copy of the journal
+/// restores it.
+final class Broken extends JournalCheck {
   const Broken(this.entries, this.torn, this.missing);
   final List<int> entries;
   final int torn;
@@ -181,9 +185,9 @@ final class Broken extends RecordCheck {
 }
 
 /// Stored bytes that no longer hash to their name: torn, edited or damaged.
-/// [RecordDriver.get] throws it; the next [RecordDriver.add] of the bytes
-/// the name stands for writes them back, as does copying the object's file
-/// in from another copy of the record.
+/// [Journal.get] throws it; the next [Journal.add] of the bytes the name
+/// stands for writes them back, as does copying the object's file in from
+/// another copy of the journal.
 final class CorruptObject implements Exception {
   const CorruptObject(this.id);
   final ObjectId id;
@@ -192,46 +196,47 @@ final class CorruptObject implements Exception {
   String toString() => 'CorruptObject: ${id.hex} does not hash to its name';
 }
 
-final class RecordDriver {
-  RecordDriver._(this.dir, this.hash, this._writer);
+final class Journal {
+  Journal._(this.dir, this.codeHash, this._writer);
 
-  /// Holds `objects/`, `entries`, `approved` and, while a driver has it open,
-  /// `writer.<pid>`.
+  /// Holds `objects/`, `entries`, `approved` and, while a journal has it
+  /// open, `writer.<pid>`.
   final Directory dir;
 
-  /// This driver's own hash, computed from its source when it opened.
-  final DriverHash hash;
+  /// The hash of this package's code, computed from its source when the
+  /// journal opened. Every entry it adds names it.
+  final CodeHash codeHash;
 
-  /// This driver's claim on [dir], deleted by [close].
+  /// This journal's claim on [dir], deleted by [close].
   final File _writer;
   var _open = true;
 
-  /// A record driver writing into [dir], which it claims for this process
-  /// until [close] (see the library comment). Throws a [StateError] when
-  /// [dir] is already claimed by this process; any other failure to claim it,
-  /// such as a folder it cannot write, throws as itself. Null when the driver cannot
-  /// name itself the way the library comment does ([ownHash]): every entry
-  /// names the driver that wrote it, and a driver that cannot name itself
-  /// writes none.
-  static RecordDriver? open(Directory dir) {
-    final hash = ownHash();
-    if (hash == null) return null;
+  /// A journal writing into [dir], which it claims for this process until
+  /// [close] (see the library comment). Throws a [StateError] when [dir] is
+  /// already claimed by this process; any other failure to claim it, such as
+  /// a folder it cannot write, throws as itself. Null when this package
+  /// cannot name its own code the way the library comment does ([ownHash]):
+  /// every entry names the code that wrote it, and a journal that cannot name
+  /// its code writes none.
+  static Journal? open(Directory dir) {
+    final codeHash = ownHash();
+    if (codeHash == null) return null;
     dir.createSync(recursive: true);
     final writer = File('${dir.path}/writer.$pid');
     try {
       writer.createSync(exclusive: true);
     } on PathExistsException {
       throw StateError(
-        '${dir.path} is already open in this process. If no driver here has '
+        '${dir.path} is already open in this process. If no journal here has '
         'it open, a crashed process with the same id left ${writer.path}; '
         'delete it.',
       );
     }
-    return RecordDriver._(dir, hash, writer);
+    return Journal._(dir, codeHash, writer);
   }
 
-  /// Gives up this driver's claim on [dir], so another driver in this
-  /// process can open it. This driver writes nothing after.
+  /// Gives up this journal's claim on [dir], so another journal in this
+  /// process can open it. This journal writes nothing after.
   void close() {
     if (!_open) return;
     _open = false;
@@ -243,11 +248,9 @@ final class RecordDriver {
   /// disk, as in a compiled build; `lib/` holds a link, which `find` and this
   /// code would walk differently; or a file's name is one `shasum` would
   /// print differently from how it is written.
-  static DriverHash? ownHash() {
+  static CodeHash? ownHash() {
     final entry = Isolate.resolvePackageUriSync(
-      Uri.parse(
-        'package:is_airlock_record_driver/is_airlock_record_driver.dart',
-      ),
+      Uri.parse('package:is_journal/is_journal.dart'),
     );
     if (entry == null || !entry.isScheme('file')) return null;
     final lib = File.fromUri(entry).parent.path;
@@ -269,19 +272,19 @@ final class RecordDriver {
       listing.write('${ObjectId.of(bytes).hex}  $name\n');
     }
     // Every name is ASCII, so its code units are its bytes.
-    return DriverHash.of(Uint8List.fromList(listing.toString().codeUnits));
+    return CodeHash.of(Uint8List.fromList(listing.toString().codeUnits));
   }
 
-  /// The driver hashes the person has approved: the first word of each line
+  /// The code hashes the person has approved: the first word of each line
   /// of `approved`, so the line `shasum` prints (`<hash>  -`) goes in as it
   /// is, and the rest of a line is theirs. Read each time it is asked: an
-  /// entry came from code they checked when its [RecordEntry.driver] is here.
-  Set<DriverHash> approved() {
+  /// entry came from code they checked when its [JournalEntry.code] is here.
+  Set<CodeHash> approved() {
     final file = File('${dir.path}/approved');
     if (!file.existsSync()) return const {};
     return {
       for (final line in file.readAsLinesSync())
-        ?DriverHash.parse(line.trim().split(RegExp(r'\s+')).first),
+        ?CodeHash.parse(line.trim().split(RegExp(r'\s+')).first),
     };
   }
 
@@ -293,12 +296,12 @@ final class RecordDriver {
   /// caller adds what it is about to act on before it acts: one call for
   /// each thing that crosses, the bytes as they are handed over, with
   /// whatever the caller says about them. Every call adds an entry, so the
-  /// same bytes added twice have two entries. The entry goes
-  /// in before the object: a crash between the two leaves an entry naming an
-  /// object that never arrived, which [check] reports, never bytes kept with
-  /// no entry to say they were about to be acted on.
+  /// same bytes added twice have two entries. The entry goes in before the
+  /// object: a crash between the two leaves an entry naming an object that
+  /// never arrived, which [check] reports, never bytes kept with no entry to
+  /// say they were about to be acted on.
   ObjectId add(Uint8List bytes) {
-    if (!_open) throw StateError('this driver is closed');
+    if (!_open) throw StateError('this journal is closed');
     final id = ObjectId.of(bytes);
     _enter(id);
     _keep(id, bytes);
@@ -306,7 +309,7 @@ final class RecordDriver {
   }
 
   /// Writes [bytes] as [id] when that name is absent or no longer holds them.
-  /// The temporary file is named for this process, which no other driver
+  /// The temporary file is named for this process, which no other journal
   /// shares.
   void _keep(ObjectId id, Uint8List bytes) {
     final file = _object(id);
@@ -335,7 +338,7 @@ final class RecordDriver {
     try {
       f.lockSync(FileLock.blockingExclusive);
       final previous = _lastEntry(f);
-      final entry = RecordEntry(previous, hash, object);
+      final entry = JournalEntry(previous, codeHash, object);
       f.setPositionSync(f.lengthSync());
       f.writeFromSync(entry.encode());
       f.flushSync();
@@ -346,38 +349,42 @@ final class RecordDriver {
 
   /// The hash of [f]'s last entry. A tail shorter than an entry was torn by
   /// a crash: it is padded with zeros to a whole entry and chained from as it
-  /// is, so [check] reports it rather than the record losing it. Its object
+  /// is, so [check] reports it rather than the journal losing it. Its object
   /// id, cut short and padded, names no object here unless the zeros
   /// completed it, and then the entry is the one that was being written.
   EntryHash _lastEntry(RandomAccessFile f) {
     var length = f.lengthSync();
-    final torn = length % RecordEntry.length;
+    final torn = length % JournalEntry.length;
     if (torn != 0) {
       f.setPositionSync(length);
-      f.writeFromSync(Uint8List(RecordEntry.length - torn));
-      length += RecordEntry.length - torn;
+      f.writeFromSync(Uint8List(JournalEntry.length - torn));
+      length += JournalEntry.length - torn;
     }
     if (length == 0) return EntryHash.origin;
-    f.setPositionSync(length - RecordEntry.length);
-    return EntryHash.of(f.readSync(RecordEntry.length));
+    f.setPositionSync(length - JournalEntry.length);
+    return EntryHash.of(f.readSync(JournalEntry.length));
   }
 
   /// Every entry checked against the one before it, and for whether the
   /// object it names is here. Not whether that object still holds its bytes:
-  /// that reads every byte ever sent, and [get] checks it on each read.
-  RecordCheck check() {
+  /// that reads every byte ever added, and [get] checks it on each read.
+  JournalCheck check() {
     final file = File('${dir.path}/entries');
-    if (!file.existsSync()) return const NoRecord();
+    if (!file.existsSync()) return const NoJournal();
     final bytes = file.readAsBytesSync();
     final broken = <int>[];
     final missing = <int>[];
     final here = <ObjectId, bool>{};
     var previous = EntryHash.origin;
     var at = 0;
-    for (; at + RecordEntry.length <= bytes.length; at += RecordEntry.length) {
-      final n = at ~/ RecordEntry.length + 1;
-      final raw = Uint8List.sublistView(bytes, at, at + RecordEntry.length);
-      final entry = RecordEntry.parse(raw)!;
+    for (
+      ;
+      at + JournalEntry.length <= bytes.length;
+      at += JournalEntry.length
+    ) {
+      final n = at ~/ JournalEntry.length + 1;
+      final raw = Uint8List.sublistView(bytes, at, at + JournalEntry.length);
+      final entry = JournalEntry.parse(raw)!;
       if (entry.previous != previous) broken.add(n);
       if (!here.putIfAbsent(
         entry.object,
@@ -389,7 +396,7 @@ final class RecordDriver {
     }
     final torn = bytes.length - at;
     return broken.isEmpty && torn == 0 && missing.isEmpty
-        ? Intact(at ~/ RecordEntry.length, previous)
+        ? Intact(at ~/ JournalEntry.length, previous)
         : Broken(broken, torn, missing);
   }
 }
