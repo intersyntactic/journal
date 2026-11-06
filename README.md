@@ -45,6 +45,7 @@ One directory, which it only ever adds to:
   padded with zeros before the journal writes again, so its object id, cut
   short, names no object here.
 
+- **`lock`**, empty, which processes take turns through: see below.
 - **`writer.<pid>`**, while a journal has the directory open: see below.
 
 `check()` says which entries do not name the entry before them, and which
@@ -66,9 +67,14 @@ computed when it opened.
 
 There is one writer per directory. `Journal.open` creates `writer.<pid>` only
 if it is absent, so a second journal in the same process, in any isolate,
-cannot open the directory until the first calls `close()`. Dart has no append
-that cannot overwrite, and two writers in one process would write over each
-other's entries. Separate processes take turns at each entry through a lock.
+cannot open the directory until the first calls `close()`, and a journal
+cannot be sent to another isolate, since sending would copy it. Dart has no
+append that cannot overwrite, and two writers in one process would write over
+each other's entries. Separate processes take turns at each entry through a
+lock on `lock`, a file nothing else has a reason to open: closing any
+descriptor on a file gives up every lock its process holds on that file, so a
+lock on `entries` would end whenever anything in the process read them. A
+relative directory is resolved when the journal opens.
 
 ## Checking it
 
@@ -96,19 +102,23 @@ name its code writes nothing.
 The journal can be checked without this package too. From the journal's
 directory, in bash:
 
-    p=$(printf 'is_journal/1' | shasum -a 256 | cut -c1-64); n=0
-    while read -r e; do
-      [ ${#e} = 192 ] || { echo "$((${#e} / 2)) bytes after the last whole entry"; break; }
-      n=$((n + 1)); o=${e:128:64}
-      [ "${e:0:64}" = "$p" ] || echo "entry $n is broken"
-      [ -f "objects/${o:0:2}/${o:2}" ] || echo "entry $n's object is missing"
-      p=$(printf %s "$e" | xxd -r -p | shasum -a 256 | cut -c1-64)
-    done < <(xxd -p -c 96 entries)
-    echo "$n entries, head $p"
+    if [ ! -f entries ]; then echo "no journal here"
+    elif ! command -v xxd > /dev/null; then echo "this needs xxd"
+    else
+      p=$(printf 'is_journal/1' | shasum -a 256 | cut -c1-64); n=0
+      while read -r e; do
+        [ ${#e} = 192 ] || { echo "$((${#e} / 2)) bytes after the last whole entry"; break; }
+        n=$((n + 1)); o=${e:128:64}
+        [ "${e:0:64}" = "$p" ] || echo "entry $n is broken"
+        [ -f "objects/${o:0:2}/${o:2}" ] || echo "entry $n's object is missing"
+        p=$(printf %s "$e" | xxd -r -p | shasum -a 256 | cut -c1-64)
+      done < <(xxd -p -c 96 entries)
+      echo "$n entries, head $p"
+    fi
 
 ## What it imports
 
-`dart:io`, `dart:isolate`, `dart:typed_data` and
+`dart:convert`, `dart:io`, `dart:isolate`, `dart:typed_data` and
 [`is_content_id`](https://pub.dev/packages/is_content_id), which holds
 `ObjectId` and the sha256 every name is made with. The journal re-exports it,
 so importing the journal gives you `ObjectId` too. The code hash names this

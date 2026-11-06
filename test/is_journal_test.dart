@@ -26,6 +26,22 @@ String readmeBlock(String marker) {
 Future<Journal?> openInAnotherIsolate(String path) =>
     Isolate.run(() => Journal.open(Directory(path)));
 
+/// [journal]'s code hash, read in another isolate. Top-level, so the
+/// closure sent to it carries [journal] and nothing of a test's state.
+Future<CodeHash> codeHashInAnotherIsolate(Journal journal) =>
+    Isolate.run(() => journal.codeHash);
+
+/// Reads [path] over and over, as anything else in a process might.
+void readForever(String path) {
+  while (true) {
+    try {
+      File(path).readAsBytesSync();
+    } on FileSystemException {
+      // Not written yet.
+    }
+  }
+}
+
 String bash(String script, Directory dir) {
   final r = Process.runSync('bash', ['-c', script], workingDirectory: dir.path);
   expect(r.exitCode, 0, reason: r.stderr as String);
@@ -116,6 +132,58 @@ void main() {
       await expectLater(openInAnotherIsolate(dir.path), throwsStateError);
     });
 
+    test('cannot be sent to another isolate, which would copy it', () async {
+      await expectLater(codeHashInAnotherIsolate(journal), throwsArgumentError);
+    });
+
+    test('keeps its folder when the working directory moves', () {
+      final home = Directory.current;
+      addTearDown(() => Directory.current = home);
+      final elsewhere = Directory('${dir.path}/elsewhere')..createSync();
+      Directory.current = dir;
+      final moved = Journal.open(Directory('moved'))!;
+      Directory.current = elsewhere;
+      moved
+        ..add(bytesOf('after the move'))
+        ..close();
+      expect(File('${dir.path}/moved/entries').existsSync(), isTrue);
+      expect(Directory('${elsewhere.path}/moved').existsSync(), isFalse);
+    });
+
+    test('processes take turns, whatever else reads the entries', () async {
+      // Reading `entries` opens and closes it, and closing any descriptor on
+      // a file gives up every lock this process holds on that file.
+      const n = 2000;
+      final reader = await Isolate.spawn(readForever, entries().path);
+      addTearDown(() => reader.kill(priority: Isolate.immediate));
+      final other = await Process.start(Platform.resolvedExecutable, [
+        'test/add_from_another_process.dart',
+        dir.path,
+        '$n',
+      ]);
+      final errors = other.stderr.transform(utf8.decoder).join();
+      await other.stdout.transform(utf8.decoder).first;
+      addAll('this', n);
+      expect(await other.exitCode, 0, reason: await errors);
+      reader.kill(priority: Isolate.immediate);
+      final check = journal.check();
+      expect(
+        check,
+        isA<Intact>(),
+        reason: check is Broken
+            ? '${check.entries.length} broken, ${check.missing.length} '
+                  'missing, ${check.torn} torn'
+            : null,
+      );
+      expect((check as Intact).count, 2 * n);
+    });
+
+    test('closes when its claim is already gone', () {
+      File('${dir.path}/writer.$pid').deleteSync();
+      journal.close();
+      expect(() => journal.add(bytesOf('late')), throwsStateError);
+    });
+
     test('a closed journal writes nothing', () {
       journal.close();
       expect(() => journal.add(bytesOf('late')), throwsStateError);
@@ -141,6 +209,15 @@ void main() {
         '${journal.codeHash.hex}  -\n\n  ${other.hex} checked 5 Nov\nnot a hash\n',
       );
       expect(journal.approved(), {journal.codeHash, other});
+    });
+
+    test('approved reads past bytes that are not UTF-8', () {
+      File('${dir.path}/approved').writeAsBytesSync([
+        ...utf8.encode('${journal.codeHash.hex}  checked by '),
+        0xff,
+        0x0a,
+      ]);
+      expect(journal.approved(), {journal.codeHash});
     });
 
     test('an approval writes nothing, and covers what was already written', () {
@@ -292,6 +369,18 @@ void main() {
           [3],
           [2],
         ],
+      );
+    });
+
+    test("the README's bash says when there is no journal, or no xxd", () {
+      final script = readmeBlock('directory, in bash:');
+      expect(journal.check(), isA<NoJournal>());
+      expect(bash(script, dir).trim(), 'no journal here');
+      addAll('step', 1);
+      final noTools = Directory('${dir.path}/no-tools')..createSync();
+      expect(
+        bash('PATH=${noTools.path}\n$script', dir).trim(),
+        'this needs xxd',
       );
     });
 
