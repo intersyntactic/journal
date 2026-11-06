@@ -2,18 +2,16 @@
 
 ## 0.2.0
 
+The format is unchanged: journals written by 0.1.0 read the same.
+
 - The code hash is an `is_content_id` `FileSetId`, the name of a set of
   files, which `is_content_id` 0.2.0 now holds. `CodeHash` is gone:
   `Journal.codeHash`, `Journal.ownHash()`, `JournalEntry.code` and
-  `approved()` are `FileSetId`s. The same `lib/` has the same 32-byte hash,
-  and the format is unchanged.
+  `approved()` are `FileSetId`s. The same `lib/` has the same 32-byte hash.
 - Depends on `is_content_id` ^0.2.0, and re-exports it, so `FileSetId` and
   `ListedPath` come with the journal.
 
-## 0.1.1
-
-Fixes from a review of 0.1.0. The format is unchanged: journals written by
-0.1.0 read the same.
+Fixes from a review of 0.1.0:
 
 - Processes take turns through a lock on a new file, `lock`, instead of on
   `entries`. Closing any descriptor on a file gives up every lock its process
