@@ -13,8 +13,9 @@
 /// kept, each added before its object. An entry says nothing of what the
 /// bytes are; that is for whoever adds them to write into them. An entry is
 /// three names, 96 bytes ([JournalEntry]): the entry before it, the code
-/// that wrote it ([CodeHash]) and the object. An entry that is changed or
-/// removed breaks the chain at the entry after it, and an entry whose object
+/// that wrote it ([Journal.codeHash]) and the object. An entry that is
+/// changed or removed breaks the chain at the entry after it, and an entry
+/// whose object
 /// is not here is named too ([Journal.check]). The chain is a checksum
 /// against damage and drift, not proof against someone set on editing it:
 /// entries cut from the end leave a shorter journal that still chains, and
@@ -27,17 +28,17 @@
 /// creating `writer.<pid>` there only if it is absent, so no second journal
 /// in the same process, in any isolate, can open it until [Journal.close].
 /// Nor can a journal be sent to another isolate: sending copies it, and the
-/// copy would write with no claim of its own. Dart has no append that
-/// cannot overwrite, and two writers in one process
-/// would write over each other's entries. Processes take turns at each entry
+/// copy would write with no claim of its own. Dart has no append that cannot
+/// overwrite, and two writers in one process would write over each other's
+/// entries. Processes take turns at each entry
 /// through a lock on `lock`, a file nothing else has a reason to open:
 /// closing any descriptor on a file gives up every lock its process holds
 /// on that file, so a lock on `entries` would end whenever anything in the
 /// process read them.
 ///
-/// THE CODE HASH is the sha256 of what `shasum -a 256` prints for this
-/// package's `lib/` files, so the person can compute it without running this
-/// code, from the package's root:
+/// THE CODE HASH is the [FileSetId] of this package's `lib/` files: the
+/// sha256 of what `shasum -a 256` prints for them, so the person can compute
+/// it without running this code, from the package's root:
 ///
 ///     (cd lib && find . -type f -name '*.dart' -print0 |
 ///       LC_ALL=C sort -z | xargs -0 shasum -a 256 | shasum -a 256)
@@ -47,9 +48,9 @@
 /// the journal is read ([Journal.approved]), never written into the entry.
 /// The journal reads that file and never writes it.
 ///
-/// It imports `dart:convert`, `dart:io`, `dart:isolate`, `dart:typed_data` and
-/// `is_content_id`, which holds the sha256 every name is made with and
-/// [ObjectId]. The code hash names this package's own code only:
+/// It imports `dart:convert`, `dart:io`, `dart:isolate`, `dart:typed_data`
+/// and `is_content_id`, which holds the sha256 every name is made with,
+/// [ObjectId] and [FileSetId]. The code hash names this package's own code:
 /// `is_content_id` comes from pub.dev, and an app's `pubspec.lock` records
 /// the version it resolved and the sha256 of that version's archive.
 /// An import added here changes the hash like any other edit, so the person
@@ -67,9 +68,6 @@ import 'dart:typed_data';
 import 'package:is_content_id/is_content_id.dart';
 
 export 'package:is_content_id/is_content_id.dart';
-
-/// A name `shasum` prints as it is: printable ASCII with no backslash.
-final _plainName = RegExp(r'^[\x20-\x5b\x5d-\x7e]+$');
 
 /// The sha256 of one journal entry.
 final class EntryHash extends Sha256Name {
@@ -95,23 +93,6 @@ final class EntryHash extends Sha256Name {
   );
 }
 
-/// The sha256 of the code that writes a journal: of the listing
-/// `shasum -a 256` prints for its package's `lib/` files.
-final class CodeHash extends Sha256Name {
-  CodeHash._(super.digest);
-
-  /// The hash of [listing].
-  factory CodeHash.of(Uint8List listing) => CodeHash._(sha256(listing));
-
-  static CodeHash? parse(String s) => switch (Sha256Name.digestOfHex(s)) {
-    final d? => CodeHash._(d),
-    null => null,
-  };
-
-  static CodeHash? fromDigest(Uint8List digest) =>
-      digest.length == 32 ? CodeHash._(digest) : null;
-}
-
 /// One entry of a journal, three names: `previous │ code │ object`, 32 bytes
 /// each. Whether the person approved [code] is not in it: that is read from
 /// `approved` whenever the journal is read ([Journal.approved]), so
@@ -124,7 +105,7 @@ final class JournalEntry {
   static const length = 96;
 
   final EntryHash previous;
-  final CodeHash code;
+  final FileSetId code;
   final ObjectId object;
 
   /// [bytes] as an entry, read back; null unless they are [length] bytes.
@@ -132,7 +113,7 @@ final class JournalEntry {
     if (bytes.length != length) return null;
     return switch ((
       EntryHash.fromDigest(Uint8List.sublistView(bytes, 0, 32)),
-      CodeHash.fromDigest(Uint8List.sublistView(bytes, 32, 64)),
+      FileSetId.fromDigest(Uint8List.sublistView(bytes, 32, 64)),
       ObjectId.fromDigest(Uint8List.sublistView(bytes, 64, 96)),
     )) {
       (final p?, final c?, final o?) => JournalEntry(p, c, o),
@@ -205,7 +186,7 @@ final class Journal {
 
   /// The hash of this package's code, computed from its source when the
   /// journal opened. Every entry it adds names it.
-  final CodeHash codeHash;
+  final FileSetId codeHash;
 
   /// This journal's claim on [dir], deleted by [close].
   final File _writer;
@@ -253,32 +234,28 @@ final class Journal {
   /// Null when it cannot be computed exactly that way: the source is not on
   /// disk, as in a compiled build; `lib/` holds a link, which `find` and this
   /// code would walk differently; or a file's name is one `shasum` would
-  /// print differently from how it is written.
-  static CodeHash? ownHash() {
+  /// print differently from how it is written ([ListedPath.parse]).
+  static FileSetId? ownHash() {
     final entry = Isolate.resolvePackageUriSync(
       Uri.parse('package:is_journal/is_journal.dart'),
     );
     if (entry == null || !entry.isScheme('file')) return null;
     final lib = File.fromUri(entry).parent.path;
-    final names = <String>[];
+    final files = <ListedPath, ObjectId>{};
     for (final f in Directory(
       lib,
     ).listSync(recursive: true, followLinks: false)) {
       if (f is Link) return null;
       if (f is! File || !f.path.endsWith('.dart')) continue;
-      final name =
-          '.${f.path.substring(lib.length).replaceAll(Platform.pathSeparator, '/')}';
-      if (!_plainName.hasMatch(name)) return null;
-      names.add(name);
+      final path = ListedPath.parse(
+        f.path
+            .substring(lib.length + 1)
+            .replaceAll(Platform.pathSeparator, '/'),
+      );
+      if (path == null) return null;
+      files[path] = ObjectId.of(f.readAsBytesSync());
     }
-    names.sort();
-    final listing = StringBuffer();
-    for (final name in names) {
-      final bytes = File('$lib${name.substring(1)}').readAsBytesSync();
-      listing.write('${ObjectId.of(bytes).hex}  $name\n');
-    }
-    // Every name is ASCII, so its code units are its bytes.
-    return CodeHash.of(Uint8List.fromList(listing.toString().codeUnits));
+    return FileSetId.of(files);
   }
 
   /// The code hashes the person has approved: the first word of each line
@@ -286,14 +263,14 @@ final class Journal {
   /// is, and the rest of a line is theirs, in whatever bytes. Read each time
   /// it is asked: an entry came from code they checked when its
   /// [JournalEntry.code] is here.
-  Set<CodeHash> approved() {
+  Set<FileSetId> approved() {
     final file = File('${dir.path}/approved');
     if (!file.existsSync()) return const {};
     return {
       for (final line in file.readAsLinesSync(
         encoding: const Utf8Codec(allowMalformed: true),
       ))
-        ?CodeHash.parse(line.trim().split(RegExp(r'\s+')).first),
+        ?FileSetId.parse(line.trim().split(RegExp(r'\s+')).first),
     };
   }
 

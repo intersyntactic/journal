@@ -28,7 +28,7 @@ Future<Journal?> openInAnotherIsolate(String path) =>
 
 /// [journal]'s code hash, read in another isolate. Top-level, so the
 /// closure sent to it carries [journal] and nothing of a test's state.
-Future<CodeHash> codeHashInAnotherIsolate(Journal journal) =>
+Future<FileSetId> codeHashInAnotherIsolate(Journal journal) =>
     Isolate.run(() => journal.codeHash);
 
 /// Reads [path] over and over, as anything else in a process might.
@@ -204,7 +204,7 @@ void main() {
 
     test('approved holds the first word of each line of approved', () {
       expect(journal.approved(), isEmpty);
-      final other = CodeHash.parse(ObjectId.of(bytesOf('another')).hex)!;
+      final other = FileSetId.parse(ObjectId.of(bytesOf('another')).hex)!;
       File('${dir.path}/approved').writeAsStringSync(
         '${journal.codeHash.hex}  -\n\n  ${other.hex} checked 5 Nov\nnot a hash\n',
       );

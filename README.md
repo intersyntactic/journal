@@ -120,8 +120,9 @@ directory, in bash:
 
 `dart:convert`, `dart:io`, `dart:isolate`, `dart:typed_data` and
 [`is_content_id`](https://pub.dev/packages/is_content_id), which holds
-`ObjectId` and the sha256 every name is made with. The journal re-exports it,
-so importing the journal gives you `ObjectId` too. The code hash names this
+`ObjectId`, `FileSetId` and the sha256 every name is made with. The journal
+re-exports it, so importing the journal gives you `ObjectId` and `FileSetId`
+too. The code hash names this
 package's own `lib/` only: `is_content_id` comes from pub.dev, and an app's
 `pubspec.lock` records the version it resolved and the sha256 of that
 version's archive.
