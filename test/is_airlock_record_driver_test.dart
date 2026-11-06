@@ -89,21 +89,12 @@ void main() {
       expect(objects.whereType<File>().length, 1);
     });
 
-    test('that no longer hash to their name throw, until stored again', () {
+    test('that no longer hash to their name throw, until added again', () {
       final id = driver.add(bytesOf('what went up'));
       object(id).writeAsStringSync('edited');
       expect(() => driver.get(id), throwsA(isA<CorruptObject>()));
-      driver.store(bytesOf('what went up'));
+      driver.add(bytesOf('what went up'));
       expect(driver.get(id), bytesOf('what went up'));
-      expect(entriesBytes().length, RecordEntry.length);
-    });
-
-    test('stored, are kept with no entry, under the id add gives them', () {
-      final id = driver.store(bytesOf('a piece'));
-      expect(driver.get(id), bytesOf('a piece'));
-      expect(driver.check(), isA<NoRecord>());
-      expect(driver.add(bytesOf('a piece')), id);
-      expect((driver.check() as Intact).count, 1);
     });
   });
 
@@ -134,7 +125,6 @@ void main() {
     test('a closed driver writes nothing', () {
       driver.close();
       expect(() => driver.add(bytesOf('late')), throwsStateError);
-      expect(() => driver.store(bytesOf('late')), throwsStateError);
       expect(entries().existsSync(), isFalse);
       expect(Directory('${dir.path}/objects').existsSync(), isFalse);
     });
@@ -207,11 +197,12 @@ void main() {
       );
     });
 
-    test('names an entry whose object is gone, until it is stored again', () {
+    test('names an entry whose object is gone, until its file is back', () {
       addAll('step', 3);
       final gone = RecordEntry.parse(
         Uint8List.sublistView(entriesBytes(), 96, 96 * 2),
       )!.object;
+      final copy = object(gone).readAsBytesSync();
       object(gone).deleteSync();
       final check = driver.check() as Broken;
       expect(
@@ -223,8 +214,9 @@ void main() {
         ],
       );
 
-      // Stored, not added: writing it back is not something crossing.
-      driver.store(bytesOf('step 1'));
+      // Copied in from another copy of the record: no entry, since nothing
+      // crossed.
+      object(gone).writeAsBytesSync(copy);
       expect((driver.check() as Intact).count, 3);
     });
 

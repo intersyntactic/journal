@@ -3,11 +3,11 @@
 /// two things in one directory and only ever adds to them.
 ///
 /// OBJECTS, `objects/<2>/<62>`: bytes named by their sha256 ([ObjectId]),
-/// kept by [RecordDriver.add] with an entry or [RecordDriver.store] without
-/// one, written when that name is absent or no longer holds them, and
+/// kept whole, written when that name is absent or no longer holds them, and
 /// checked against it whenever they are read. The same bytes are the same
-/// object whichever home or driver wrote them, so two stores merge by
-/// copying each other's objects in.
+/// object whichever home or driver wrote them, so two stores merge by copying
+/// each other's objects in, and an object missing or damaged here is
+/// restored by copying its file in from another copy of the record.
 ///
 /// THE ENTRIES, `entries`: one for each [RecordDriver.add], that is, each
 /// time a caller records bytes before it acts on them (sends, reads or
@@ -171,8 +171,8 @@ final class Intact extends RecordCheck {
 /// whose object is not in `objects/`: a crash between an entry and its
 /// object, an object removed since, an [RecordDriver.add] still under way
 /// in another process, or a torn entry padded with zeros, whose object id
-/// was cut short. [RecordDriver.store] of those bytes writes the object back
-/// without adding an entry.
+/// was cut short. Copying the object's file in from another copy of the
+/// record restores it.
 final class Broken extends RecordCheck {
   const Broken(this.entries, this.torn, this.missing);
   final List<int> entries;
@@ -181,8 +181,9 @@ final class Broken extends RecordCheck {
 }
 
 /// Stored bytes that no longer hash to their name: torn, edited or damaged.
-/// [RecordDriver.get] throws it; [RecordDriver.store] of the bytes the name
-/// stands for writes them back.
+/// [RecordDriver.get] throws it; the next [RecordDriver.add] of the bytes
+/// the name stands for writes them back, as does copying the object's file
+/// in from another copy of the record.
 final class CorruptObject implements Exception {
   const CorruptObject(this.id);
   final ObjectId id;
@@ -289,8 +290,10 @@ final class RecordDriver {
   );
 
   /// Adds an entry naming [bytes], keeps them, and returns their id. A
-  /// caller adds what it is about to act on before it acts. Every call adds
-  /// an entry, so the same bytes added twice have two entries. The entry goes
+  /// caller adds what it is about to act on before it acts: one call for
+  /// each thing that crosses, the bytes as they are handed over, with
+  /// whatever the caller says about them. Every call adds an entry, so the
+  /// same bytes added twice have two entries. The entry goes
   /// in before the object: a crash between the two leaves an entry naming an
   /// object that never arrived, which [check] reports, never bytes kept with
   /// no entry to say they were about to be acted on.
@@ -298,20 +301,6 @@ final class RecordDriver {
     if (!_open) throw StateError('this driver is closed');
     final id = ObjectId.of(bytes);
     _enter(id);
-    _keep(id, bytes);
-    return id;
-  }
-
-  /// Keeps [bytes] without an entry and returns their id: the pieces of
-  /// something added. A request that resends a whole conversation is kept as
-  /// its pieces, each once, and one entry is added for the bytes that say how
-  /// they join. [check] does not read inside those bytes, so a missing piece
-  /// shows when it is read ([get]). Also how an object that is missing or
-  /// damaged is written back, without an entry for something that did not
-  /// happen.
-  ObjectId store(Uint8List bytes) {
-    if (!_open) throw StateError('this driver is closed');
-    final id = ObjectId.of(bytes);
     _keep(id, bytes);
     return id;
   }

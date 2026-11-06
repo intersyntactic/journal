@@ -25,19 +25,19 @@ void main() {
 
 One directory, which it only ever adds to:
 
-- **Objects** in `objects/<2>/<62>`: bytes named by their sha256, kept by
-  `add` with an entry or `store` without one. Each is written when that name is
-  absent or no longer holds them, and checked against its name whenever it is
-  read (`CorruptObject` if it no longer matches). The same bytes are the same
-  object whoever wrote them, so two records merge by copying objects in.
+- **Objects** in `objects/<2>/<62>`: bytes named by their sha256, kept whole.
+  Each is written when that name is absent or no longer holds them, and
+  checked against its name whenever it is read (`CorruptObject` if it no
+  longer matches). The same bytes are the same object whoever wrote them, so
+  two records merge by copying objects in, and an object missing or damaged
+  here is restored by copying its file in from another copy of the record.
 - **The entries** in `entries`: one for every `add`, that is, each time a
   caller records bytes before it acts on them (sends, reads or decides them),
   even bytes already stored, added before the object. An entry says nothing of
   what the bytes are: whether they went out, came in or were refused is for
-  the caller to write into them. Something large that repeats, like a request
-  that resends a whole conversation, can be kept as pieces with `store`, each
-  once, and one entry added for the bytes that say how they join. Each entry
-  is three names, 96 bytes:
+  the caller to write into them, so a caller adds one entry for each thing
+  that crosses: the bytes as they are handed over, with whatever it says
+  about them. Each entry is three names, 96 bytes:
 
   | bytes | what |
   |---|---|
