@@ -1,10 +1,9 @@
 # is_journal
 
-An add-only journal of bytes. A caller adds what it is about to act on before
-it acts, and each entry is chained to the one before it and names the hash of
-the code that wrote it. It is small enough to read in one sitting, because the
-point of a journal is that nothing checks it as it runs: a person reads it
-instead.
+An add-only journal of bytes. Each entry is chained to the one before it and
+names the bytes and the hash of the code that wrote it. It is small enough to
+read in one sitting: nothing checks it as it runs, so a person reads it
+instead, and every entry names the code they read.
 
 ```dart
 import 'dart:convert';
@@ -14,17 +13,11 @@ import 'package:is_journal/is_journal.dart';
 
 void main() {
   final journal = Journal.open(Directory('journal'))!;
-  final id = journal.add(utf8.encode('what went up'));
+  final id = journal.add(utf8.encode('hello'));
   print('$id, written by ${journal.codeHash}');
   journal.close();
 }
 ```
-
-In [intersyntactic](https://github.com/enspyrco/intersyntactic) it is the
-airlock's record driver: the one driver whose effects the airlock does not
-decide, since deciding them would need a record of their own. The airlock adds
-each effect it is asked to hand to a driver, whether it hands it over or
-refuses it, before anything acts on it.
 
 ## What it keeps
 
@@ -36,13 +29,10 @@ One directory, which it only ever adds to:
   longer matches). The same bytes are the same object whoever wrote them, so
   two journals merge by copying objects in, and an object missing or damaged
   here is restored by copying its file in from another copy of the journal.
-- **The entries** in `entries`: one for every `add`, that is, each time a
-  caller records bytes before it acts on them (sends, reads or decides them),
-  even bytes already stored, added before the object. An entry says nothing of
-  what the bytes are: whether they went out, came in or were refused is for
-  the caller to write into them, so a caller adds one entry for each thing
-  that crosses: the bytes as they are handed over, with whatever it says
-  about them. Each entry is three names, 96 bytes:
+- **The entries** in `entries`: one for every `add`, even of bytes already
+  kept, each added before its object. An entry says nothing of what the bytes
+  are; that is for whoever adds them to write into them. Each entry is three
+  names, 96 bytes:
 
   | bytes | what |
   |---|---|
@@ -71,11 +61,8 @@ the file can recompute it.
 
 Whatever can write the journal's directory, this package's code or `approved`
 can change what the journal says, by mistake or otherwise, and the chain
-cannot tell. So run what the journal watches as an OS user that cannot write
-them, in a process that cannot reload this code: a journal reloaded in place
-keeps the hash it computed when it opened. A separate user stops a mistaken
-program, or another writer, from changing the journal. It is not a sandbox,
-and does not contain a program set on getting out of it.
+cannot tell. A journal whose code is reloaded in place keeps the hash it
+computed when it opened.
 
 There is one writer per directory. `Journal.open` creates `writer.<pid>` only
 if it is absent, so a second journal in the same process, in any isolate,

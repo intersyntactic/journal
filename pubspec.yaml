@@ -1,8 +1,7 @@
 name: is_journal
 description: >-
-  An add-only journal of bytes: each entry added before the bytes are acted
-  on, chained to the one before, and naming the hash of the code that wrote
-  it.
+  An add-only journal of bytes: each entry chained to the one before it,
+  naming the bytes and the hash of the code that wrote it.
 version: 0.1.0
 repository: https://github.com/intersyntactic/journal
 

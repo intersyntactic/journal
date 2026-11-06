@@ -77,9 +77,9 @@ void main() {
 
   group('objects', () {
     test('come back as they went in; added twice, one object, two entries', () {
-      final id = journal.add(bytesOf('what went up'));
-      expect(journal.get(id), bytesOf('what went up'));
-      expect(journal.add(bytesOf('what went up')), id);
+      final id = journal.add(bytesOf('hello'));
+      expect(journal.get(id), bytesOf('hello'));
+      expect(journal.add(bytesOf('hello')), id);
       expect(entriesBytes().length, 2 * JournalEntry.length);
       final objects = Directory('${dir.path}/objects')
           .listSync(recursive: true);
@@ -87,11 +87,11 @@ void main() {
     });
 
     test('that no longer hash to their name throw, until added again', () {
-      final id = journal.add(bytesOf('what went up'));
+      final id = journal.add(bytesOf('hello'));
       object(id).writeAsStringSync('edited');
       expect(() => journal.get(id), throwsA(isA<CorruptObject>()));
-      journal.add(bytesOf('what went up'));
-      expect(journal.get(id), bytesOf('what went up'));
+      journal.add(bytesOf('hello'));
+      expect(journal.get(id), bytesOf('hello'));
     });
   });
 
@@ -210,7 +210,7 @@ void main() {
       );
 
       // Copied in from another copy of the journal: no entry, since nothing
-      // crossed.
+      // was added.
       object(gone).writeAsBytesSync(copy);
       expect((journal.check() as Intact).count, 3);
     });

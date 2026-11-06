@@ -13,7 +13,7 @@ void main() {
   final checked = journal.approved().contains(journal.codeHash);
   print('code ${journal.codeHash} is ${checked ? 'approved' : 'unreviewed'}');
 
-  final id = journal.add(utf8.encode('what went up'));
+  final id = journal.add(utf8.encode('hello'));
   print('stored as $id');
   print('read back: ${utf8.decode(journal.get(id)!)}');
   print('journal intact: ${journal.check() is Intact}');

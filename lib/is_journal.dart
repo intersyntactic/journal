@@ -1,33 +1,27 @@
-/// A journal: an add-only record of bytes, each entry added before the bytes
-/// are acted on, chained to the entry before it, and naming the hash of the
-/// code that wrote it. In intersyntactic it is the record driver: the one
-/// driver whose effects the airlock does not decide, since deciding them
-/// would need a record of their own. It keeps two things in one directory
-/// and only ever adds to them.
+/// A journal: an add-only record of bytes. Each entry is chained to the
+/// entry before it and names the bytes and the hash of the code that wrote
+/// it. It keeps two things in one directory and only ever adds to them.
 ///
 /// OBJECTS, `objects/<2>/<62>`: bytes named by their sha256 ([ObjectId]),
 /// kept whole, written when that name is absent or no longer holds them, and
 /// checked against it whenever they are read. The same bytes are the same
-/// object whichever home or journal wrote them, so two journals merge by
-/// copying each other's objects in, and an object missing or damaged here is
+/// object whichever journal wrote them, so two journals merge by copying
+/// each other's objects in, and an object missing or damaged here is
 /// restored by copying its file in from another copy of the journal.
 ///
-/// THE ENTRIES, `entries`: one for each [Journal.add], that is, each time a
-/// caller records bytes before it acts on them (sends, reads or decides
-/// them), whether or not they are already stored. An entry says nothing of
-/// what the bytes are: whether they went out, came in or were refused is for
-/// the caller to write into them. Each is added before its object. An entry
-/// is three names, 96 bytes ([JournalEntry]): the entry before it, the code
+/// THE ENTRIES, `entries`: one for each [Journal.add], even of bytes already
+/// kept, each added before its object. An entry says nothing of what the
+/// bytes are; that is for whoever adds them to write into them. An entry is
+/// three names, 96 bytes ([JournalEntry]): the entry before it, the code
 /// that wrote it ([CodeHash]) and the object. An entry that is changed or
 /// removed breaks the chain at the entry after it, and an entry whose object
 /// is not here is named too ([Journal.check]). The chain is a checksum
 /// against damage and drift, not proof against someone set on editing it:
 /// entries cut from the end leave a shorter journal that still chains, and
-/// sha256 has no secret, so whoever can write the file can recompute it. So
-/// run what the journal watches as a user that can write neither this
-/// directory, this package's code nor `approved`, in a process that cannot
-/// reload this code: a journal reloaded in place keeps the
-/// [Journal.codeHash] it opened with.
+/// sha256 has no secret, so whoever can write the file can recompute it.
+/// Whatever can write this directory, this package's code or `approved` can
+/// change what the journal says, and the chain cannot tell. A journal whose
+/// code is reloaded in place keeps the [Journal.codeHash] it opened with.
 ///
 /// ONE WRITER: [Journal.open] claims the directory for its process by
 /// creating `writer.<pid>` there only if it is absent, so no second journal
@@ -55,8 +49,9 @@
 /// the version it resolved and the sha256 of that version's archive.
 /// An import added here changes the hash like any other edit, so the person
 /// sees it.
-/// Everything is synchronous: a caller records what it is about to do before
-/// it does it, and one write must not interleave with another.
+/// Everything is synchronous: when [Journal.add] returns, its entry and its
+/// bytes have been written and flushed, and one write must not interleave
+/// with another.
 library;
 
 import 'dart:io';
@@ -88,9 +83,7 @@ final class EntryHash extends Sha256Name {
   /// What the first entry names as the entry before it: the sha256 of the
   /// journal format's name, so a journal in another format breaks at its
   /// first entry, and anyone can compute it with
-  /// `printf 'is_journal/1' | shasum -a 256`. Before this package was named,
-  /// its records began from `is_airlock_record_driver/1` (97-byte entries
-  /// ending in a review byte) or `/2` (this format).
+  /// `printf 'is_journal/1' | shasum -a 256`.
   static final origin = EntryHash.of(
     Uint8List.fromList('is_journal/1'.codeUnits),
   );
@@ -292,14 +285,11 @@ final class Journal {
     '${dir.path}/objects/${id.hex.substring(0, 2)}/${id.hex.substring(2)}',
   );
 
-  /// Adds an entry naming [bytes], keeps them, and returns their id. A
-  /// caller adds what it is about to act on before it acts: one call for
-  /// each thing that crosses, the bytes as they are handed over, with
-  /// whatever the caller says about them. Every call adds an entry, so the
-  /// same bytes added twice have two entries. The entry goes in before the
-  /// object: a crash between the two leaves an entry naming an object that
-  /// never arrived, which [check] reports, never bytes kept with no entry to
-  /// say they were about to be acted on.
+  /// Adds an entry naming [bytes], keeps them, and returns their id. Every
+  /// call adds an entry, so the same bytes added twice have two entries. The
+  /// entry goes in before the object: a crash between the two leaves an
+  /// entry naming an object that never arrived, which [check] reports, never
+  /// bytes kept with no entry naming them.
   ObjectId add(Uint8List bytes) {
     if (!_open) throw StateError('this journal is closed');
     final id = ObjectId.of(bytes);
