@@ -26,9 +26,14 @@
 /// ONE WRITER: [Journal.open] claims the directory for its process by
 /// creating `writer.<pid>` there only if it is absent, so no second journal
 /// in the same process, in any isolate, can open it until [Journal.close].
-/// Dart has no append that cannot overwrite, and two writers in one process
+/// Nor can a journal be sent to another isolate: sending copies it, and the
+/// copy would write with no claim of its own. Dart has no append that
+/// cannot overwrite, and two writers in one process
 /// would write over each other's entries. Processes take turns at each entry
-/// through a lock on `entries`.
+/// through a lock on `lock`, a file nothing else has a reason to open:
+/// closing any descriptor on a file gives up every lock its process holds
+/// on that file, so a lock on `entries` would end whenever anything in the
+/// process read them.
 ///
 /// THE CODE HASH is the sha256 of what `shasum -a 256` prints for this
 /// package's `lib/` files, so the person can compute it without running this
@@ -42,7 +47,7 @@
 /// the journal is read ([Journal.approved]), never written into the entry.
 /// The journal reads that file and never writes it.
 ///
-/// It imports `dart:io`, `dart:isolate`, `dart:typed_data` and
+/// It imports `dart:convert`, `dart:io`, `dart:isolate`, `dart:typed_data` and
 /// `is_content_id`, which holds the sha256 every name is made with and
 /// [ObjectId]. The code hash names this package's own code only:
 /// `is_content_id` comes from pub.dev, and an app's `pubspec.lock` records
@@ -54,6 +59,7 @@
 /// with another.
 library;
 
+import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
 import 'dart:typed_data';
@@ -189,11 +195,12 @@ final class CorruptObject implements Exception {
   String toString() => 'CorruptObject: ${id.hex} does not hash to its name';
 }
 
+@pragma('vm:isolate-unsendable')
 final class Journal {
   Journal._(this.dir, this.codeHash, this._writer);
 
-  /// Holds `objects/`, `entries`, `approved` and, while a journal has it
-  /// open, `writer.<pid>`.
+  /// Holds `objects/`, `entries`, `approved`, `lock` and, while a journal has
+  /// it open, `writer.<pid>`.
   final Directory dir;
 
   /// The hash of this package's code, computed from its source when the
@@ -210,10 +217,12 @@ final class Journal {
   /// a folder it cannot write, throws as itself. Null when this package
   /// cannot name its own code the way the library comment does ([ownHash]):
   /// every entry names the code that wrote it, and a journal that cannot name
-  /// its code writes none.
+  /// its code writes none. A relative [dir] is resolved when it opens, so
+  /// the journal stays where it is when the working directory moves.
   static Journal? open(Directory dir) {
     final codeHash = ownHash();
     if (codeHash == null) return null;
+    dir = dir.absolute;
     dir.createSync(recursive: true);
     final writer = File('${dir.path}/writer.$pid');
     try {
@@ -233,7 +242,11 @@ final class Journal {
   void close() {
     if (!_open) return;
     _open = false;
-    _writer.deleteSync();
+    try {
+      _writer.deleteSync();
+    } on PathNotFoundException {
+      // Already given up: someone deleted it.
+    }
   }
 
   /// The hash of this package's `lib/` as the library comment computes it.
@@ -270,13 +283,16 @@ final class Journal {
 
   /// The code hashes the person has approved: the first word of each line
   /// of `approved`, so the line `shasum` prints (`<hash>  -`) goes in as it
-  /// is, and the rest of a line is theirs. Read each time it is asked: an
-  /// entry came from code they checked when its [JournalEntry.code] is here.
+  /// is, and the rest of a line is theirs, in whatever bytes. Read each time
+  /// it is asked: an entry came from code they checked when its
+  /// [JournalEntry.code] is here.
   Set<CodeHash> approved() {
     final file = File('${dir.path}/approved');
     if (!file.existsSync()) return const {};
     return {
-      for (final line in file.readAsLinesSync())
+      for (final line in file.readAsLinesSync(
+        encoding: const Utf8Codec(allowMalformed: true),
+      ))
         ?CodeHash.parse(line.trim().split(RegExp(r'\s+')).first),
     };
   }
@@ -323,17 +339,22 @@ final class Journal {
   void _enter(ObjectId object) {
     dir.createSync(recursive: true);
     // Locked, so another process writing here chains from this entry rather
-    // than from the same one. Closing the file releases the lock.
-    final f = File('${dir.path}/entries').openSync(mode: FileMode.append);
+    // than from the same one. Closing `lock` releases it.
+    final lock = File('${dir.path}/lock').openSync(mode: FileMode.append);
     try {
-      f.lockSync(FileLock.blockingExclusive);
-      final previous = _lastEntry(f);
-      final entry = JournalEntry(previous, codeHash, object);
-      f.setPositionSync(f.lengthSync());
-      f.writeFromSync(entry.encode());
-      f.flushSync();
+      lock.lockSync(FileLock.blockingExclusive);
+      final f = File('${dir.path}/entries').openSync(mode: FileMode.append);
+      try {
+        final previous = _lastEntry(f);
+        final entry = JournalEntry(previous, codeHash, object);
+        f.setPositionSync(f.lengthSync());
+        f.writeFromSync(entry.encode());
+        f.flushSync();
+      } finally {
+        f.closeSync();
+      }
     } finally {
-      f.closeSync();
+      lock.closeSync();
     }
   }
 
