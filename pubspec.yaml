@@ -9,7 +9,7 @@ environment:
   sdk: ^3.13.0
 
 dependencies:
-  is_content_id: ^0.2.0
+  is_content_id: 0.2.0
 
 dev_dependencies:
   lints: ^6.1.0
