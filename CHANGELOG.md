@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.0
+
+The format is unchanged, but every code hash changes: approve 0.4.0's anew.
+
+- The code hash covers the `is_content_id` the journal runs with, not only
+  this package: the `lib/` files of both, each path under its package's
+  name. A new `is_content_id` changes the hash, whichever version an app
+  resolves, `dependency_overrides` included.
+- So the dependency is `^0.2.0` again. 0.3.0's exact pin kept any app from
+  combining the journal with a library that needs an `is_content_id` fix.
+- The README's bash check hashes both packages, finding them through
+  `.dart_tool/package_config.json`, from this package's root or an app's.
+
 ## 0.3.0
 
 The format is unchanged: journals written by 0.2.0 read the same, and an
