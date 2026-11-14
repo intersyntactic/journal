@@ -9,6 +9,10 @@
   that does not follow its chain's tip, and adds a `started` entry holding
   the sender table on every start. The checks are in `lib/`, so the code
   hash covers them.
+- A read socket (`JOURNAL_READ_SOCKET`, optional), for readers who can only
+  read: `follow <kinds> <after>` sends the matching entries after a point
+  and then each new one as it is added, and `tip <entry>` answers a chain's
+  tip. Every entry comes with the hash `ok` answered for it.
 - `Journal.addEntry` adds as `add` does and returns the hash of the entry it
   wrote.
 
