@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Depends on `is_content_id` 0.2.0 exactly, not ^0.2.0, and the library
+  comment names that version, so the code hash changes when the pin does: the
+  same code hash means the same `is_content_id`. A test fails if
+  `pubspec.yaml` and `lib/` disagree, or if the pin becomes a range.
+
 ## 0.2.0
 
 The format is unchanged: journals written by 0.1.0 read the same.
