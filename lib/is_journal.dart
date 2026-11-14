@@ -337,16 +337,22 @@ final class Journal {
   /// entry naming an object that never arrived, which [check] reports, never
   /// bytes kept with no entry naming them. Throws [ObjectNotKept] when the
   /// entry went in and the object did not.
-  ObjectId add(Uint8List bytes) {
+  ObjectId add(Uint8List bytes) => _add(bytes).object;
+
+  /// Adds as [add] does, and returns the hash of the entry it wrote, which a
+  /// later entry's bytes can name.
+  EntryHash addEntry(Uint8List bytes) => _add(bytes).entry;
+
+  ({ObjectId object, EntryHash entry}) _add(Uint8List bytes) {
     if (!_open) throw StateError('this journal is closed');
     final id = ObjectId.of(bytes);
-    _enter(id);
+    final entry = _enter(id);
     try {
       _keep(id, bytes);
     } on FileSystemException catch (e) {
       throw ObjectNotKept(id, e);
     }
-    return id;
+    return (object: id, entry: entry);
   }
 
   /// Writes [bytes] as [id] when that name is absent or no longer holds them.
@@ -371,7 +377,7 @@ final class Journal {
     return bytes;
   }
 
-  void _enter(ObjectId object) {
+  EntryHash _enter(ObjectId object) {
     dir.createSync(recursive: true);
     // Locked, so another process writing here chains from this entry rather
     // than from the same one. Closing `lock` releases it.
@@ -381,10 +387,11 @@ final class Journal {
       final f = File('${dir.path}/entries').openSync(mode: FileMode.append);
       try {
         final previous = _lastEntry(f);
-        final entry = JournalEntry(previous, codeHash, object);
+        final entry = JournalEntry(previous, codeHash, object).encode();
         f.setPositionSync(f.lengthSync());
-        f.writeFromSync(entry.encode());
+        f.writeFromSync(entry);
         f.flushSync();
+        return EntryHash.of(entry);
       } finally {
         f.closeSync();
       }
