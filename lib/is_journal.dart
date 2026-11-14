@@ -59,10 +59,12 @@
 /// The journal reads that file and never writes it.
 ///
 /// It imports `dart:convert`, `dart:io`, `dart:isolate`, `dart:typed_data`
-/// and `is_content_id`, which holds the sha256 every name is made with,
-/// [ObjectId] and [FileSetId]. The code hash names this package's own code:
-/// `is_content_id` comes from pub.dev, and an app's `pubspec.lock` records
-/// the version it resolved and the sha256 of that version's archive.
+/// and `is_content_id` 0.2.0, exactly, which holds the sha256 every name is
+/// made with, [ObjectId] and [FileSetId]. The code hash names this package's
+/// own code, and this comment names the one `is_content_id` it runs with, so
+/// moving that pin changes the hash. An app's `dependency_overrides` can
+/// still swap it, and its `pubspec.lock` records the version it resolved and
+/// the sha256 of that version's archive.
 /// An import added here changes the hash like any other edit, so the person
 /// sees it.
 /// Everything is synchronous: when [Journal.add] returns, its entry and its

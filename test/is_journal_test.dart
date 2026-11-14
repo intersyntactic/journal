@@ -91,6 +91,26 @@ void main() {
     expect(Journal.ownHash()!.hex, printed.substring(0, 64));
   });
 
+  test('the code hash covers the exact is_content_id it depends on', () {
+    // The hash names lib/ only, so the pin in pubspec.yaml reaches it only
+    // if lib/ names the same version: a pin moved alone fails here.
+    final pin = RegExp(
+      r'^  is_content_id: (\S+)$',
+      multiLine: true,
+    ).firstMatch(File('pubspec.yaml').readAsStringSync());
+    expect(pin, isNotNull, reason: 'pubspec.yaml has no is_content_id line');
+    final version = pin![1]!;
+    expect(
+      version,
+      matches(RegExp(r'^\d+\.\d+\.\d+$')),
+      reason: 'is_content_id is pinned exactly, not a range',
+    );
+    expect(
+      File('lib/is_journal.dart').readAsStringSync(),
+      contains('`is_content_id` $version,'),
+    );
+  });
+
   group('a compiled build', () {
     late Directory build;
     late String define;

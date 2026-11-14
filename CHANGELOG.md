@@ -7,6 +7,10 @@
   and `Journal.open` uses it when there is no source to hash. Run from
   source, `open` throws a `StateError` when that define is not this code's
   hash.
+- Depends on `is_content_id` 0.2.0 exactly, not ^0.2.0, and the library
+  comment names that version, so the code hash changes when the pin does: the
+  same code hash means the same `is_content_id`. A test fails if
+  `pubspec.yaml` and `lib/` disagree, or if the pin becomes a range.
 
 ## 0.2.0
 
