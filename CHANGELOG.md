@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.0
+
+- `package:is_journal/service.dart` and `dart run is_journal:service`: a
+  journal's one writer, which other processes send entries to over a Unix
+  socket. It refuses a kind the sender's user may not write (read from the
+  socket: `SO_PEERCRED` on Linux, `LOCAL_PEERCRED` on macOS) and an entry
+  that does not follow its chain's tip, and adds a `started` entry holding
+  the sender table on every start. The checks are in `lib/`, so the code
+  hash covers them.
+- `Journal.addEntry` adds as `add` does and returns the hash of the entry it
+  wrote.
+
 ## 0.4.0
 
 The format is unchanged, but every code hash changes: approve 0.4.0's anew.

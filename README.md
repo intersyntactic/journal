@@ -124,6 +124,25 @@ directory, in bash:
       echo "$n entries, head $p"
     fi
 
+## One writer, many senders
+
+`package:is_journal/service.dart` is a journal's one writer, which other
+processes send entries to over a Unix socket. A request is the bytes to
+record, starting with `<kind>\n<follows>\n`: a kind the sender's user may
+write, and the entry it follows, or `-` to start a chain. The service reads
+the user from the socket, refuses a kind the sender table doesn't give that
+user, and refuses an entry that doesn't follow its chain's tip, naming the
+tip. It answers `ok <entry hash>` or `refused <why>`. On every start it adds
+an entry holding the sender table in force.
+
+    JOURNAL_DIR=/var/lib/record JOURNAL_SOCKET=/run/record/journal.sock \
+      JOURNAL_SENDERS=/etc/record/senders dart run is_journal:service
+
+The sender table has one line per user, then the kinds that user may send:
+
+    airlock witnessed decided returned narrowed
+    loop turn
+
 ## What it imports
 
 `dart:convert`, `dart:io`, `dart:isolate`, `dart:typed_data` and
