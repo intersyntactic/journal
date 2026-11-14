@@ -67,9 +67,13 @@
 /// the sha256 of that version's archive.
 /// An import added here changes the hash like any other edit, so the person
 /// sees it.
+///
 /// Everything is synchronous: when [Journal.add] returns, its entry and its
-/// bytes have been written and flushed, and one write must not interleave
-/// with another.
+/// bytes have been written and flushed, so they outlast this process
+/// crashing, and one write must not interleave with another. They may not
+/// outlast a power cut: the renames that keep objects and the first
+/// creation of `entries` are not flushed to their folder, which Dart has no
+/// call for. [Journal.check] reports what a power cut lost.
 library;
 
 import 'dart:convert';
@@ -163,12 +167,11 @@ final class Intact extends JournalCheck {
 /// The [entries], numbered from 1, that do not name the entry before them:
 /// all of them, since checking goes on past a break, each entry against the
 /// bytes before it as they are. [torn] counts the bytes after the last whole
-/// entry, left by a write a crash cut short. [missing] numbers the entries
-/// whose object is not in `objects/`: a crash between an entry and its
-/// object, an object removed since, an [Journal.add] still under way in
-/// another process, or a torn entry padded with zeros, whose object id was
-/// cut short. Copying the object's file in from another copy of the journal
-/// restores it.
+/// entry, left by a write a crash cut short, which the next [Journal.add]
+/// cuts off. [missing] numbers the entries whose object is not in
+/// `objects/`: a crash between an entry and its object, an object removed
+/// since, or an [Journal.add] still under way in another process. Copying
+/// the object's file in from another copy of the journal restores it.
 final class Broken extends JournalCheck {
   const Broken(this.entries, this.torn, this.missing);
   final List<int> entries;
@@ -186,6 +189,22 @@ final class CorruptObject implements Exception {
 
   @override
   String toString() => 'CorruptObject: ${id.hex} does not hash to its name';
+}
+
+/// [Journal.add] recorded its entry but could not keep the bytes [id] names.
+/// The entry is in: adding the bytes again records them a second time.
+/// [Journal.check] reports the object missing until it is kept, by copying
+/// its file in from another copy of the journal or by a later add of the
+/// same bytes.
+final class ObjectNotKept extends FileSystemException {
+  ObjectNotKept(this.id, FileSystemException cause)
+    : super(
+        'the entry for ${id.hex} is in, but its object was not kept: '
+        '${cause.message}',
+        cause.path,
+        cause.osError,
+      );
+  final ObjectId id;
 }
 
 @pragma('vm:isolate-unsendable')
@@ -314,12 +333,17 @@ final class Journal {
   /// call adds an entry, so the same bytes added twice have two entries. The
   /// entry goes in before the object: a crash between the two leaves an
   /// entry naming an object that never arrived, which [check] reports, never
-  /// bytes kept with no entry naming them.
+  /// bytes kept with no entry naming them. Throws [ObjectNotKept] when the
+  /// entry went in and the object did not.
   ObjectId add(Uint8List bytes) {
     if (!_open) throw StateError('this journal is closed');
     final id = ObjectId.of(bytes);
     _enter(id);
-    _keep(id, bytes);
+    try {
+      _keep(id, bytes);
+    } on FileSystemException catch (e) {
+      throw ObjectNotKept(id, e);
+    }
     return id;
   }
 
@@ -368,17 +392,15 @@ final class Journal {
   }
 
   /// The hash of [f]'s last entry. A tail shorter than an entry was torn by
-  /// a crash: it is padded with zeros to a whole entry and chained from as it
-  /// is, so [check] reports it rather than the journal losing it. Its object
-  /// id, cut short and padded, names no object here unless the zeros
-  /// completed it, and then the entry is the one that was being written.
+  /// a crash, in an add that never returned and whose object, written after
+  /// its entry, was never kept: it is cut off, losing nothing recorded. Only
+  /// a crash leaves one, since writers take turns through `lock`.
   EntryHash _lastEntry(RandomAccessFile f) {
     var length = f.lengthSync();
     final torn = length % JournalEntry.length;
     if (torn != 0) {
-      f.setPositionSync(length);
-      f.writeFromSync(Uint8List(JournalEntry.length - torn));
-      length += JournalEntry.length - torn;
+      length -= torn;
+      f.truncateSync(length);
     }
     if (length == 0) return EntryHash.origin;
     f.setPositionSync(length - JournalEntry.length);

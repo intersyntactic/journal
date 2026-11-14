@@ -1,7 +1,20 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
+The format is unchanged: journals written by 0.2.0 read the same, and an
+entry 0.2.0 padded with zeros stays as it is.
+
+- An entry torn by a crash is cut off before the next entry is written,
+  instead of padded with zeros and chained from. Its add never returned and
+  its object was never kept, so nothing recorded is lost, and `check()`
+  reports the journal `Intact` again rather than `Broken` for good.
+- `add` throws `ObjectNotKept`, a `FileSystemException` carrying the id,
+  when its entry went in but its object did not, so a caller can tell that
+  adding again would record the bytes twice.
+- The library comment says what "written and flushed" covers: this process
+  crashing, not a power cut, since the renames that keep objects are not
+  flushed to their folder.
 - A compiled build can keep a journal. `dart run is_journal:code_hash`
   prints `-Dis_journal.code=<hash>` from the source about to be compiled,
   and `Journal.open` uses it when there is no source to hash. Run from
