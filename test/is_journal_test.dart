@@ -111,6 +111,63 @@ void main() {
     );
   });
 
+  group('a compiled build', () {
+    late Directory build;
+    late String define;
+
+    /// test/open_compiled.dart compiled with [args], run on [dir].
+    String runCompiled(List<String> args, String name) {
+      final exe = '${build.path}/$name';
+      final c = Process.runSync('dart', [
+        'compile',
+        'exe',
+        ...args,
+        'test/open_compiled.dart',
+        '-o',
+        exe,
+      ]);
+      expect(c.exitCode, 0, reason: '${c.stdout}${c.stderr}');
+      final r = Process.runSync(exe, [dir.path]);
+      expect(r.exitCode, 0, reason: r.stderr as String);
+      return (r.stdout as String).trim();
+    }
+
+    setUpAll(() {
+      build = Directory.systemTemp.createTempSync('journal_build');
+      final r = Process.runSync('dart', ['run', 'is_journal:code_hash']);
+      expect(r.exitCode, 0, reason: r.stderr as String);
+      define = (r.stdout as String).trim();
+    });
+    tearDownAll(() => build.deleteSync(recursive: true));
+
+    test('code_hash prints the code hash as a define', () {
+      expect(define, '-Dis_journal.code=${Journal.ownHash()!.hex}');
+    });
+
+    test('given the define, opens and names this code', () {
+      expect(runCompiled([define], 'with'), Journal.ownHash()!.hex);
+      expect(journal.check(), isA<Intact>());
+    }, timeout: const Timeout(Duration(minutes: 2)));
+
+    test('without it, does not open', () {
+      expect(runCompiled([], 'without'), 'null');
+    }, timeout: const Timeout(Duration(minutes: 2)));
+
+    test('from source, refuses a define that is not this code', () {
+      final other = ObjectId.of(bytesOf('other code')).hex;
+      for (final wrong in ['-Dis_journal.code=$other', '-Dis_journal.code=x']) {
+        final r = Process.runSync('dart', [
+          'run',
+          wrong,
+          'test/open_compiled.dart',
+          dir.path,
+        ]);
+        expect(r.exitCode, isNot(0), reason: wrong);
+        expect(r.stderr, contains('is_journal:code_hash'), reason: wrong);
+      }
+    }, timeout: const Timeout(Duration(minutes: 1)));
+  });
+
   group('objects', () {
     test('come back as they went in; added twice, one object, two entries', () {
       final id = journal.add(bytesOf('hello'));
