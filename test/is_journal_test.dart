@@ -373,9 +373,15 @@ void main() {
       final objects = Directory('${dir.path}/objects')..createSync();
       Process.runSync('chmod', ['555', objects.path]);
       addTearDown(() => Process.runSync('chmod', ['755', objects.path]));
+      // A distinct exception, so the caller knows the entry is in and adding
+      // again would record it twice; still a FileSystemException.
       expect(
         () => journal.add(bytesOf('cannot be kept')),
-        throwsA(isA<FileSystemException>()),
+        throwsA(
+          isA<ObjectNotKept>()
+              .having((e) => e.id, 'id', ObjectId.of(bytesOf('cannot be kept')))
+              .having((e) => e, 'itself', isA<FileSystemException>()),
+        ),
       );
       final check = journal.check() as Broken;
       expect(
@@ -396,37 +402,20 @@ void main() {
       expect(check.head, isNot(head));
     });
 
-    test('reports a torn tail, then its padded entry, and checks past it', () {
+    test('reports a torn tail, and the next add cuts it off', () {
       addAll('before', 3);
       entries().writeAsBytesSync(entriesBytes().sublist(0, 96 * 2 + 50));
-      var check = journal.check() as Broken;
+      final check = journal.check() as Broken;
       expect(
         [check.entries, check.torn, check.missing],
         [<int>[], 50, <int>[]],
       );
 
-      // Padded with zeros, entry 3 still names entry 2, but its object id
-      // was cut short and names nothing.
+      // The torn entry's add never returned, and its object comes after it,
+      // so cutting it loses nothing that was recorded.
       addAll('after', 3);
-      check = journal.check() as Broken;
-      expect(
-        [check.entries, check.torn, check.missing],
-        [
-          <int>[],
-          0,
-          [3],
-        ],
-      );
-
-      entries().writeAsBytesSync(entriesBytes()..[96 * 4 + 70] ^= 1);
-      check = journal.check() as Broken;
-      expect(
-        [check.entries, check.missing],
-        [
-          [6],
-          [3, 5],
-        ],
-      );
+      expect((journal.check() as Intact).count, 5);
+      expect(entriesBytes().length, 96 * 5);
     });
 
     test("the README's bash finds what check() finds", () {
@@ -465,13 +454,14 @@ void main() {
       final script = readmeBlock('directory, in bash:');
       addAll('before', 3);
       entries().writeAsBytesSync(entriesBytes().sublist(0, 96 * 2 + 50));
-      var check = journal.check() as Broken;
+      final check = journal.check() as Broken;
       expect(bashFinds(script, dir), [check.entries, check.missing, 50]);
 
       addAll('after', 2);
-      check = journal.check() as Broken;
-      expect(bashFinds(script, dir), [check.entries, check.missing, 0]);
-      expect(check.missing, [3]);
+      expect(
+        bash(script, dir).trim(),
+        '4 entries, head ${(journal.check() as Intact).head.hex}',
+      );
     });
   });
 }

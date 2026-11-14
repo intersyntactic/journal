@@ -41,9 +41,9 @@ One directory, which it only ever adds to:
   | 64–95 | the object's id |
 
   The first entry names, as the entry before it, the sha256 of
-  `is_journal/1`, the journal format's name. An entry torn by a crash is
-  padded with zeros before the journal writes again, so its object id, cut
-  short, names no object here.
+  `is_journal/1`, the journal format's name. An entry torn by a crash is cut
+  off before the journal writes again: its add never returned, and its
+  object, written after it, was never kept.
 
 - **`lock`**, empty, which processes take turns through: see below.
 - **`writer.<pid>`**, while a journal has the directory open: see below.
