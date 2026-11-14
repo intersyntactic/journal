@@ -36,12 +36,21 @@
 /// on that file, so a lock on `entries` would end whenever anything in the
 /// process read them.
 ///
-/// THE CODE HASH is the [FileSetId] of this package's `lib/` files: the
-/// sha256 of what `shasum -a 256` prints for them, so the person can compute
-/// it without running this code, from the package's root:
+/// THE CODE HASH is the [FileSetId] of the `lib/` files of this package and
+/// of the `is_content_id` it runs with, each path under its package's name:
+/// the sha256 of what `shasum -a 256` prints for them, so the person can
+/// compute it without running this code, from the root of this package or
+/// of an app that uses it, after `dart pub get`:
 ///
-///     (cd lib && find . -type f -name '*.dart' -print0 |
-///       LC_ALL=C sort -z | xargs -0 shasum -a 256 | shasum -a 256)
+///     (cd .dart_tool && for p in is_content_id is_journal; do
+///       r=$(sed -n "/\"name\": \"$p\"/{n;s|.*\"rootUri\": \"\(file://\)\{0,1\}\(.*\)\",|\2|p;}" package_config.json)
+///       (cd "$r/lib" && find . -type f -name '*.dart' -print0 | LC_ALL=C sort -z |
+///         xargs -0 shasum -a 256 | sed "s|  \./|  ./$p/|")
+///     done | shasum -a 256)
+///
+/// `is_content_id` is in it because it makes every name the journal writes:
+/// a new version of it changes the hash, so the person sees it, whichever
+/// version an app resolves.
 ///
 /// A compiled build has no `lib/` to hash, so it is given the hash when it
 /// is compiled, from the source the compiler reads:
@@ -59,14 +68,9 @@
 /// The journal reads that file and never writes it.
 ///
 /// It imports `dart:convert`, `dart:io`, `dart:isolate`, `dart:typed_data`
-/// and `is_content_id` 0.2.0, exactly, which holds the sha256 every name is
-/// made with, [ObjectId] and [FileSetId]. The code hash names this package's
-/// own code, and this comment names the one `is_content_id` it runs with, so
-/// moving that pin changes the hash. An app's `dependency_overrides` can
-/// still swap it, and its `pubspec.lock` records the version it resolved and
-/// the sha256 of that version's archive.
-/// An import added here changes the hash like any other edit, so the person
-/// sees it.
+/// and `is_content_id`, which holds the sha256 every name is made with,
+/// [ObjectId] and [FileSetId]. An import added here changes the hash like
+/// any other edit, so the person sees it.
 ///
 /// Everything is synchronous: when [Journal.add] returns, its entry and its
 /// bytes have been written and flushed, so they outlast this process
@@ -281,32 +285,41 @@ final class Journal {
     }
   }
 
-  /// The hash of this package's `lib/` as the library comment computes it.
-  /// Null when it cannot be computed exactly that way: the source is not on
-  /// disk, as in a compiled build; `lib/` holds a link, which `find` and this
-  /// code would walk differently; or a file's name is one `shasum` would
-  /// print differently from how it is written ([ListedPath.parse]).
+  /// The hash of this package's `lib/` and `is_content_id`'s, as the library
+  /// comment computes it. Null when it cannot be computed exactly that way:
+  /// the source is not on disk, as in a compiled build; a `lib/` holds a
+  /// link, which `find` and this code would walk differently; or a file's
+  /// name is one `shasum` would print differently from how it is written
+  /// ([ListedPath.parse]).
   static FileSetId? ownHash() {
-    final entry = Isolate.resolvePackageUriSync(
-      Uri.parse('package:is_journal/is_journal.dart'),
-    );
-    if (entry == null || !entry.isScheme('file')) return null;
-    final lib = File.fromUri(entry).parent.path;
     final files = <ListedPath, ObjectId>{};
+    for (final package in const ['is_content_id', 'is_journal']) {
+      if (!_listLib(package, files)) return null;
+    }
+    return FileSetId.of(files);
+  }
+
+  /// Adds the `.dart` files of [package]'s `lib/` to [files], each path
+  /// under the package's name. False when they cannot be listed the way the
+  /// library comment's command lists them.
+  static bool _listLib(String package, Map<ListedPath, ObjectId> files) {
+    final entry = Isolate.resolvePackageUriSync(
+      Uri.parse('package:$package/$package.dart'),
+    );
+    if (entry == null || !entry.isScheme('file')) return false;
+    final lib = File.fromUri(entry).parent.path;
     for (final f in Directory(
       lib,
     ).listSync(recursive: true, followLinks: false)) {
-      if (f is Link) return null;
+      if (f is Link) return false;
       if (f is! File || !f.path.endsWith('.dart')) continue;
       final path = ListedPath.parse(
-        f.path
-            .substring(lib.length + 1)
-            .replaceAll(Platform.pathSeparator, '/'),
+        '$package/${f.path.substring(lib.length + 1).replaceAll(Platform.pathSeparator, '/')}',
       );
-      if (path == null) return null;
+      if (path == null) return false;
       files[path] = ObjectId.of(f.readAsBytesSync());
     }
-    return FileSetId.of(files);
+    return true;
   }
 
   /// The code hashes the person has approved: the first word of each line

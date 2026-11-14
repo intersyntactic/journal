@@ -87,28 +87,17 @@ void main() {
   });
 
   test("the code hash is what the README's command prints", () {
-    final printed = bash(readmeBlock("package's root:"), Directory.current);
+    final printed = bash(readmeBlock('`dart pub get`:'), Directory.current);
     expect(Journal.ownHash()!.hex, printed.substring(0, 64));
   });
 
-  test('the code hash covers the exact is_content_id it depends on', () {
-    // The hash names lib/ only, so the pin in pubspec.yaml reaches it only
-    // if lib/ names the same version: a pin moved alone fails here.
-    final pin = RegExp(
-      r'^  is_content_id: (\S+)$',
-      multiLine: true,
-    ).firstMatch(File('pubspec.yaml').readAsStringSync());
-    expect(pin, isNotNull, reason: 'pubspec.yaml has no is_content_id line');
-    final version = pin![1]!;
-    expect(
-      version,
-      matches(RegExp(r'^\d+\.\d+\.\d+$')),
-      reason: 'is_content_id is pinned exactly, not a range',
+  test("the code hash covers is_content_id's code, not only this one's", () {
+    final ownOnly = bash(
+      "cd lib && find . -type f -name '*.dart' -print0 | LC_ALL=C sort -z | "
+      'xargs -0 shasum -a 256 | shasum -a 256',
+      Directory.current,
     );
-    expect(
-      File('lib/is_journal.dart').readAsStringSync(),
-      contains('`is_content_id` $version,'),
-    );
+    expect(Journal.ownHash()!.hex, isNot(ownOnly.substring(0, 64)));
   });
 
   group('a compiled build', () {

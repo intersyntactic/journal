@@ -78,12 +78,17 @@ relative directory is resolved when the journal opens.
 
 ## Checking it
 
-The code hash is the sha256 of what `shasum -a 256` prints for this package's
-`lib/` files, so it can be checked without running any of its code. From the
-package's root:
+The code hash is the sha256 of what `shasum -a 256` prints for the `lib/`
+files of this package and of the `is_content_id` it runs with, each path
+under its package's name, so it can be checked without running any of its
+code. From the root of this package, or of an app that uses it, after
+`dart pub get`:
 
-    (cd lib && find . -type f -name '*.dart' -print0 |
-      LC_ALL=C sort -z | xargs -0 shasum -a 256 | shasum -a 256)
+    (cd .dart_tool && for p in is_content_id is_journal; do
+      r=$(sed -n "/\"name\": \"$p\"/{n;s|.*\"rootUri\": \"\(file://\)\{0,1\}\(.*\)\",|\2|p;}" package_config.json)
+      (cd "$r/lib" && find . -type f -name '*.dart' -print0 | LC_ALL=C sort -z |
+        xargs -0 shasum -a 256 | sed "s|  \./|  ./$p/|")
+    done | shasum -a 256)
 
 The journal computes the same hash from its own source when it opens. Add the
 hash you checked to `approved` beside the entries, one per line: the line
@@ -122,7 +127,7 @@ directory, in bash:
 ## What it imports
 
 `dart:convert`, `dart:io`, `dart:isolate`, `dart:typed_data` and
-[`is_content_id`](https://pub.dev/packages/is_content_id) 0.2.0, exactly,
-which holds `ObjectId`, `FileSetId` and the sha256 every name is made with.
-The journal re-exports it. `lib/` names that version, so the code hash
-changes when it does.
+[`is_content_id`](https://pub.dev/packages/is_content_id), which holds
+`ObjectId`, `FileSetId` and the sha256 every name is made with. The journal
+re-exports it, and its code is in the code hash, so a new version of it
+changes the hash.
