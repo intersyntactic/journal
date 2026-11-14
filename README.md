@@ -95,9 +95,12 @@ a hash covers what it already wrote, and deleting its line takes that back.
 The journal reads `approved` and never writes it.
 
 `Journal.open` returns null when the journal cannot compute its hash the way
-that command does: in a build with no source on disk, or when `lib/` holds a
-link or a file name `shasum` would print differently. A journal that cannot
-name its code writes nothing.
+that command does: when `lib/` holds a link or a file name `shasum` would
+print differently, or in a compiled build not given the hash. A journal that
+cannot name its code writes nothing. Give a compiled build its hash when you
+compile it:
+
+    dart compile exe $(dart run is_journal:code_hash) bin/main.dart
 
 The journal can be checked without this package too. From the journal's
 directory, in bash:

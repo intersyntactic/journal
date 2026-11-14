@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- A compiled build can keep a journal. `dart run is_journal:code_hash`
+  prints `-Dis_journal.code=<hash>` from the source about to be compiled,
+  and `Journal.open` uses it when there is no source to hash. Run from
+  source, `open` throws a `StateError` when that define is not this code's
+  hash.
+
 ## 0.2.0
 
 The format is unchanged: journals written by 0.1.0 read the same.

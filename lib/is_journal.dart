@@ -43,6 +43,16 @@
 ///     (cd lib && find . -type f -name '*.dart' -print0 |
 ///       LC_ALL=C sort -z | xargs -0 shasum -a 256 | shasum -a 256)
 ///
+/// A compiled build has no `lib/` to hash, so it is given the hash when it
+/// is compiled, from the source the compiler reads:
+///
+///     dart compile exe $(dart run is_journal:code_hash) bin/main.dart
+///
+/// The binary cannot prove that hash is its own: whoever builds it chooses
+/// what goes in, as whoever edits `lib/` chooses what [Journal.ownHash]
+/// returns. What it rules out is the mistake: a build without it does not
+/// open, and a run from source refuses a hash that is not its code.
+///
 /// The hashes they approve go in the `approved` file beside the entries, and
 /// whether an entry came from code they checked is read from it whenever
 /// the journal is read ([Journal.approved]), never written into the entry.
@@ -184,9 +194,16 @@ final class Journal {
   /// it open, `writer.<pid>`.
   final Directory dir;
 
-  /// The hash of this package's code, computed from its source when the
-  /// journal opened. Every entry it adds names it.
+  /// The hash of this package's code: computed from its source when the
+  /// journal opened, or, in a compiled build, the one it was given
+  /// ([builtDefine]). Every entry it adds names it.
   final FileSetId codeHash;
+
+  /// The name of the define that gives a compiled build its code hash,
+  /// which `dart run is_journal:code_hash` prints in full.
+  static const builtDefine = 'is_journal.code';
+
+  static const _built = String.fromEnvironment(builtDefine);
 
   /// This journal's claim on [dir], deleted by [close].
   final File _writer;
@@ -196,12 +213,25 @@ final class Journal {
   /// [close] (see the library comment). Throws a [StateError] when [dir] is
   /// already claimed by this process; any other failure to claim it, such as
   /// a folder it cannot write, throws as itself. Null when this package
-  /// cannot name its own code the way the library comment does ([ownHash]):
-  /// every entry names the code that wrote it, and a journal that cannot name
-  /// its code writes none. A relative [dir] is resolved when it opens, so
-  /// the journal stays where it is when the working directory moves.
+  /// cannot name its own code the way the library comment does: from its
+  /// source ([ownHash]), or in a compiled build from [builtDefine]. Every
+  /// entry names the code that wrote it, and a journal that cannot name its
+  /// code writes none. Throws a [StateError] when [builtDefine] is not a
+  /// code hash, or, run from source, is not this code's. A relative [dir] is
+  /// resolved when it opens, so the journal stays where it is when the
+  /// working directory moves.
   static Journal? open(Directory dir) {
-    final codeHash = ownHash();
+    final built = _built.isEmpty ? null : FileSetId.parse(_built);
+    final measured = ownHash();
+    if ((_built.isNotEmpty && built == null) ||
+        (built != null && measured != null && built != measured)) {
+      throw StateError(
+        'built with -D$builtDefine=$_built, but this code hashes to '
+        '${measured?.hex ?? 'nothing'}; build with '
+        r'$(dart run is_journal:code_hash).',
+      );
+    }
+    final codeHash = measured ?? built;
     if (codeHash == null) return null;
     dir = dir.absolute;
     dir.createSync(recursive: true);
