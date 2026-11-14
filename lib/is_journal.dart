@@ -39,25 +39,14 @@
 /// THE CODE HASH is the [FileSetId] of the `lib/` files of this package and
 /// of the `is_content_id` it runs with, each path under its package's name:
 /// the sha256 of what `shasum -a 256` prints for them, so the person can
-/// compute it without running this code, from the root of this package or
-/// of an app that uses it, after `dart pub get`:
-///
-///     (cd .dart_tool && for p in is_content_id is_journal; do
-///       r=$(sed -n "/\"name\": \"$p\"/{n;s|.*\"rootUri\": \"\(file://\)\{0,1\}\(.*\)\",|\2|p;}" package_config.json)
-///       (cd "$r/lib" && find . -type f -name '*.dart' -print0 | LC_ALL=C sort -z |
-///         xargs -0 shasum -a 256 | sed "s|  \./|  ./$p/|")
-///     done | shasum -a 256)
-///
-/// `is_content_id` is in it because it makes every name the journal writes:
-/// a new version of it changes the hash, so the person sees it, whichever
-/// version an app resolves.
+/// compute it without running this code (the README's "Checking it" gives
+/// the command). `is_content_id` is in it because it makes every name the
+/// journal writes: a new version of it changes the hash, so the person sees
+/// it, whichever version an app resolves.
 ///
 /// A compiled build has no `lib/` to hash, so it is given the hash when it
-/// is compiled, from the source the compiler reads:
-///
-///     dart compile exe $(dart run is_journal:code_hash) bin/main.dart
-///
-/// The binary cannot prove that hash is its own: whoever builds it chooses
+/// is compiled, by `dart run is_journal:code_hash`, from the source the
+/// compiler reads (the README gives the build line). The binary cannot prove that hash is its own: whoever builds it chooses
 /// what goes in, as whoever edits `lib/` chooses what [Journal.ownHash]
 /// returns. What it rules out is the mistake: a build without it does not
 /// open, and a run from source refuses a hash that is not its code.
