@@ -1,7 +1,12 @@
 /// Runs a journal's one writer (see `package:is_journal/service.dart`):
 ///
 ///     JOURNAL_DIR=/var/lib/record JOURNAL_SOCKET=/run/record/journal.sock \
-///       JOURNAL_SENDERS=/etc/record/senders dart run is_journal:service
+///       JOURNAL_SENDERS=/etc/record/senders \
+///       JOURNAL_READ_SOCKET=/run/record-read/journal.sock \
+///       dart run is_journal:service
+///
+/// `JOURNAL_READ_SOCKET` is optional: without it, nothing can read through
+/// the service.
 ///
 /// Exits 78 when it cannot start as configured, and closes cleanly on
 /// SIGTERM or SIGINT.
@@ -19,6 +24,7 @@ Future<void> main() async {
     for (final name in ['JOURNAL_DIR', 'JOURNAL_SOCKET', 'JOURNAL_SENDERS'])
       env[name] ?? _fail('$name is not set'),
   ];
+  final readSocket = env['JOURNAL_READ_SOCKET'];
   final SenderTable table;
   try {
     table = SenderTable.parse(File(senders).readAsBytesSync());
@@ -30,12 +36,20 @@ Future<void> main() async {
       _fail('the journal cannot name its own code; see the README');
   final JournalService service;
   try {
-    service = await JournalService.start(journal, table, File(socket));
+    service = await JournalService.start(
+      journal,
+      table,
+      File(socket),
+      readSocket: readSocket == null ? null : File(readSocket),
+    );
   } on Object catch (e) {
     journal.close();
     _fail('$e');
   }
-  stdout.writeln('writing $dir, listening on $socket');
+  stdout.writeln(
+    'writing $dir, listening on $socket'
+    '${readSocket == null ? '' : ', readers on $readSocket'}',
+  );
   final stop = Completer<void>();
   for (final signal in [ProcessSignal.sigterm, ProcessSignal.sigint]) {
     signal.watch().listen((_) {
