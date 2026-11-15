@@ -150,7 +150,10 @@ read. A reader sends one line:
   by commas) after the entry `<after>` (`-` for the start), then each new
   one as it is added, while the reader stays connected. Each comes as
   `entry <hash> <kind> <follows> <length>`, a newline, and exactly
-  `<length>` bytes as recorded, which need not end in a newline.
+  `<length>` bytes as recorded, which need not end in a newline. Between the
+  backlog and the first new entry comes one line, `caught-up <head>`: the
+  journal's last entry of any kind when the backlog ended, or `-`, which is
+  also a place to follow from next time.
 - `tip <entry>`: answered `tip <hash>`, the tip of that entry's chain.
 
 `<hash>` is the hash `ok` answered when the entry was written.

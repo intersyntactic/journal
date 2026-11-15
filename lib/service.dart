@@ -359,8 +359,9 @@ extension on JournalService {
         final from = after == '-' ? 0 : _at[EntryHash.parse(after)!];
         if (from == null) return refuse('unknown $after');
         final follower = _Follower.parse(socket, kinds)!;
-        // Sent and registered in one synchronous step, so no entry added
-        // meanwhile is missed or sent twice.
+        // Sent, marked and registered in one synchronous step, so no entry
+        // added meanwhile is missed, sent twice, or lands unseen between
+        // the backlog and the live entries.
         for (final indexed in _order.skip(after == '-' ? 0 : from + 1)) {
           if (!follower.wants(indexed.header.kind)) continue;
           final bytes = journal.get(indexed.object);
@@ -368,6 +369,8 @@ extension on JournalService {
             _send(socket, indexed.entry, indexed.header, bytes);
           }
         }
+        final head = _order.isEmpty ? '-' : _order.last.entry.hex;
+        socket.add(utf8.encode('caught-up $head\n'));
         _followers.add(follower);
       case _:
         refuse('not-a-request');

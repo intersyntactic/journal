@@ -145,7 +145,7 @@ void main() {
 
     test('follows a kind from the origin, then as entries come', () async {
       final a = ok(await send(socket, 'turn\n-\na'));
-      await send(socket, 'witnessed\n-\nw');
+      final w = ok(await send(socket, 'witnessed\n-\nw'));
       final reader = await Reader.open(readSocket, 'follow turn -');
       expect(await reader.next(), (
         hash: a,
@@ -153,6 +153,8 @@ void main() {
         follows: '-',
         bytes: 'turn\n-\na',
       ));
+      // Where the backlog ends: the journal's head, of whatever kind.
+      expect(await reader.next(), 'caught-up $w');
       // The hash it reads back is the one the write answered with.
       final b = ok(await send(socket, 'turn\n$a\nb'));
       expect(await reader.next(), (
@@ -169,6 +171,16 @@ void main() {
       final w2 = ok(await send(socket, 'witnessed\n-\nw2'));
       final reader = await Reader.open(readSocket, 'follow witnessed $w1');
       expect(((await reader.next())! as Frame).hash, w2);
+      expect(await reader.next(), 'caught-up $w2');
+      await reader.close();
+    });
+
+    test('says it is caught up even when nothing came before', () async {
+      final head = (service.journal.check() as Intact).head.hex;
+      final reader = await Reader.open(readSocket, 'follow turn -');
+      expect(await reader.next(), 'caught-up $head');
+      final a = ok(await send(socket, 'turn\n-\na'));
+      expect(((await reader.next())! as Frame).hash, a);
       await reader.close();
     });
 
@@ -215,6 +227,7 @@ void main() {
 
     test('a closing service ends the readers following it', () async {
       final reader = await Reader.open(readSocket, 'follow turn -');
+      expect(await reader.next(), startsWith('caught-up '));
       await send(socket, 'turn\n-\na');
       expect(await reader.next(), isA<Frame>());
       await service.close();
