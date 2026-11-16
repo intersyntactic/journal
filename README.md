@@ -142,7 +142,8 @@ power cut can leave an entry whose bytes are missing, so you know something
 was recorded but not what. `check()` reports it, as an entry whose object is
 missing. This is chosen, not overlooked: a sender that acts after `ok` is
 covered against crashes, and a power cut on the journal's machine is rare
-enough to accept a reported hole.
+enough to accept a reported hole. What closing it would take, measured, is in
+[issue 13](https://github.com/intersyntactic/journal/issues/13).
 
     JOURNAL_DIR=/var/lib/record JOURNAL_SOCKET=/run/record/journal.sock \
       JOURNAL_SENDERS=/etc/record/senders dart run is_journal:service
