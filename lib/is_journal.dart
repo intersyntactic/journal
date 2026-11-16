@@ -27,6 +27,9 @@
 /// ONE WRITER: [Journal.open] claims the directory for its process by
 /// creating `writer.<pid>` there only if it is absent, so no second journal
 /// in the same process, in any isolate, can open it until [Journal.close].
+/// It holds a lock on that file while open, so a claim left by a process
+/// that ended without closing, which no lock holds, is deleted when a
+/// journal in another process next opens the directory.
 /// Nor can a journal be sent to another isolate: sending copies it, and the
 /// copy would write with no claim of its own. Dart has no append that cannot
 /// overwrite, and two writers in one process would write over each other's
@@ -202,7 +205,7 @@ final class ObjectNotKept extends FileSystemException {
 
 @pragma('vm:isolate-unsendable')
 final class Journal {
-  Journal._(this.dir, this.codeHash, this._writer);
+  Journal._(this.dir, this.codeHash, this._writer, this._claim);
 
   /// Holds `objects/`, `entries`, `approved`, `lock` and, while a journal has
   /// it open, `writer.<pid>`.
@@ -219,8 +222,10 @@ final class Journal {
 
   static const _built = String.fromEnvironment(builtDefine);
 
-  /// This journal's claim on [dir], deleted by [close].
+  /// This journal's claim on [dir], deleted by [close], and the lock on it
+  /// that tells this process is alive.
   final File _writer;
+  final RandomAccessFile _claim;
   var _open = true;
 
   /// A journal writing into [dir], which it claims for this process until
@@ -249,18 +254,54 @@ final class Journal {
     if (codeHash == null) return null;
     dir = dir.absolute;
     dir.createSync(recursive: true);
+    _sweep(dir);
     final writer = File('${dir.path}/writer.$pid');
-    try {
-      writer.createSync(exclusive: true);
-    } on PathExistsException {
-      throw StateError(
-        '${dir.path} is already open in this process. If no journal here has '
-        'it open, a crashed process with the same id left ${writer.path}; '
-        'delete it.',
-      );
+    while (true) {
+      try {
+        writer.createSync(exclusive: true);
+      } on PathExistsException {
+        throw StateError(
+          '${dir.path} is already open in this process. If no journal here '
+          'has it open, a crashed process with the same id left '
+          '${writer.path}; delete it.',
+        );
+      }
+      final claim = writer.openSync(mode: FileMode.append);
+      claim.lockSync(FileLock.blockingExclusive);
+      if (writer.existsSync()) return Journal._(dir, codeHash, writer, claim);
+      // Another process's [_sweep] took it, unlocked, for a dead process's
+      // and deleted it before this lock: claim it again.
+      claim.closeSync();
     }
-    return Journal._(dir, codeHash, writer);
   }
+
+  /// Deletes the claims of processes that ended without closing: a claim
+  /// whose lock nothing holds. It deletes while it holds the lock, so a
+  /// process that has just created its claim finds it gone once it locks.
+  /// Never this process's own claim, since closing any descriptor on a file
+  /// gives up every lock this process holds on it.
+  static void _sweep(Directory dir) {
+    for (final file in dir.listSync().whereType<File>()) {
+      final name = file.uri.pathSegments.last;
+      if (!_claimName.hasMatch(name) || name == 'writer.$pid') continue;
+      final RandomAccessFile open;
+      try {
+        open = file.openSync();
+      } on FileSystemException {
+        continue;
+      }
+      try {
+        open.lockSync(FileLock.shared);
+        file.deleteSync();
+      } on FileSystemException {
+        // Locked by a process that has it open, or already gone.
+      } finally {
+        open.closeSync();
+      }
+    }
+  }
+
+  static final _claimName = RegExp(r'^writer\.\d+$');
 
   /// Gives up this journal's claim on [dir], so another journal in this
   /// process can open it. This journal writes nothing after.
@@ -272,6 +313,7 @@ final class Journal {
     } on PathNotFoundException {
       // Already given up: someone deleted it.
     }
+    _claim.closeSync();
   }
 
   /// The hash of this package's `lib/` and `is_content_id`'s, as the library

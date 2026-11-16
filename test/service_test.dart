@@ -236,6 +236,111 @@ void main() {
     });
   });
 
+  group('get', () {
+    String ok(String answer) => answer.substring('ok '.length);
+
+    /// The file holding the object of entry [hash].
+    File objectOf(String hash) {
+      final raw = File('${dir.path}/entries').readAsBytesSync();
+      for (var at = 0; at < raw.length; at += 96) {
+        final entry = Uint8List.sublistView(raw, at, at + 96);
+        if (EntryHash.of(entry).hex != hash) continue;
+        final id = JournalEntry.parse(entry)!.object.hex;
+        return File(
+          '${dir.path}/objects/${id.substring(0, 2)}/${id.substring(2)}',
+        );
+      }
+      throw StateError('no entry $hash');
+    }
+
+    /// Asks the read socket for entry [hash], keeping its own side open,
+    /// and returns the first line and the bytes after it.
+    Future<({List<String> line, Uint8List rest})> get(String hash) async {
+      final s = await Socket.connect(
+        InternetAddress(readSocket.path, type: InternetAddressType.unix),
+        0,
+      );
+      s.add(bytesOf('get $hash\n'));
+      final all = BytesBuilder();
+      await s.forEach(all.add).timeout(const Duration(seconds: 5));
+      s.destroy();
+      final bytes = all.takeBytes();
+      final nl = bytes.indexOf(0x0a);
+      return (
+        line: utf8.decode(bytes.sublist(0, nl)).split(' '),
+        rest: Uint8List.sublistView(bytes, nl + 1),
+      );
+    }
+
+    Uint8List unhex(String hex) => Uint8List.fromList([
+      for (var i = 0; i < hex.length; i += 2)
+        int.parse(hex.substring(i, i + 2), radix: 16),
+    ]);
+
+    test(
+      'answers an entry with its bytes, and its 96 bytes, which check',
+      () async {
+        final a = ok(await send(socket, 'turn\n-\na'));
+        final b = ok(await send(socket, 'turn\n$a\nb'));
+        final got = await get(b);
+        expect(got.line.sublist(0, 5), [
+          'entry',
+          b,
+          'turn',
+          a,
+          '${'turn\n$a\nb'.length}',
+        ]);
+        expect(utf8.decode(got.rest), 'turn\n$a\nb');
+        final entry = unhex(got.line[5]);
+        expect(EntryHash.of(entry).hex, b);
+        expect(JournalEntry.parse(entry)!.object, ObjectId.of(got.rest));
+        expect(JournalEntry.parse(entry)!.previous.hex, a);
+      },
+    );
+
+    test('says none for an entry the journal does not hold', () async {
+      final unknown = ObjectId.of(bytesOf('nothing')).hex;
+      expect((await get(unknown)).line, ['none', unknown]);
+    });
+
+    test('says unreadable, not none, when the object is gone', () async {
+      final a = ok(await send(socket, 'turn\n-\na'));
+      objectOf(a).deleteSync();
+      expect((await get(a)).line, ['unreadable', a, 'missing']);
+      // Read back from the journal on a restart, it was still recorded.
+      await service.close();
+      service = await start('$me turn\n');
+      expect((await get(a)).line, ['unreadable', a, 'missing']);
+    });
+
+    test('says unreadable when the object no longer holds its bytes', () async {
+      final a = ok(await send(socket, 'turn\n-\na'));
+      objectOf(a).writeAsStringSync('turn\n-\nchanged');
+      expect((await get(a)).line, ['unreadable', a, 'corrupt']);
+      await service.close();
+      service = await start('$me turn\n');
+      expect((await get(a)).line, ['unreadable', a, 'corrupt']);
+    });
+
+    test(
+      'finds an entry written without a header, and what came after',
+      () async {
+        // Not through the service: it reads the journal back to catch up.
+        service.journal.add(bytesOf('no header'));
+        final plain = (service.journal.check() as Intact).head.hex;
+        final a = ok(await send(socket, 'turn\n-\na'));
+        final got = await get(plain);
+        expect(got.line.sublist(0, 5), ['entry', plain, '-', '-', '9']);
+        expect(utf8.decode(got.rest), 'no header');
+        expect((await get(a)).line.sublist(0, 3), ['entry', a, 'turn']);
+      },
+    );
+
+    test('refuses a hash that is not one', () async {
+      expect((await get('xyz')).line, ['refused', 'not-a-request']);
+    });
+  });
+
   group('the tip check', () {
     test('appends only to a tip; a refusal names the tip', () async {
       final a = (await send(socket, 'turn\n-\na')).substring(3);

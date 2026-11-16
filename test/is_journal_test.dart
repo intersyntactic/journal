@@ -66,7 +66,10 @@ void main() {
     dir = Directory.systemTemp.createTempSync('journal_test');
     journal = Journal.open(dir)!;
   });
-  tearDown(() => dir.deleteSync(recursive: true));
+  tearDown(() {
+    journal.close();
+    dir.deleteSync(recursive: true);
+  });
 
   group('names', () {
     test(
@@ -242,6 +245,35 @@ void main() {
             : null,
       );
       expect((check as Intact).count, 2 * n);
+    });
+
+    test("keeps a live process's claim, and removes it once killed", () async {
+      final other = await Process.start(Platform.resolvedExecutable, [
+        'test/hold_open.dart',
+        dir.path,
+      ]);
+      addTearDown(other.kill);
+      await other.stdout.transform(utf8.decoder).first;
+      final claim = File('${dir.path}/writer.${other.pid}');
+      expect(claim.existsSync(), isTrue);
+      journal.close();
+      journal = Journal.open(dir)!;
+      expect(claim.existsSync(), isTrue, reason: 'it is still open there');
+      other.kill(ProcessSignal.sigkill);
+      await other.exitCode;
+      expect(claim.existsSync(), isTrue, reason: 'a kill leaves it');
+      journal.close();
+      journal = Journal.open(dir)!;
+      expect(claim.existsSync(), isFalse);
+    });
+
+    test('removes a claim no process holds', () {
+      final left = File('${dir.path}/writer.4000000')..createSync();
+      final other = File('${dir.path}/writer.4000000.keep')..createSync();
+      journal.close();
+      journal = Journal.open(dir)!;
+      expect(left.existsSync(), isFalse);
+      expect(other.existsSync(), isTrue, reason: 'not a claim');
     });
 
     test('closes when its claim is already gone', () {

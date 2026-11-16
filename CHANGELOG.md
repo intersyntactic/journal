@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.6.0
+
+- The read socket answers `get <entry>`: the entry with its bytes, as
+  `follow` sends it, plus its 96 bytes in hex, so a reader can check that
+  the entry hashes to its name and the bytes to the object it names. Or
+  `none` when the journal holds no such entry, `unreadable … missing|corrupt`
+  when it does but its bytes are gone or changed, or `failed`.
+- The service indexes every entry, including one whose object is lost or
+  that has no header, so `get` never says `none` for an entry that was
+  recorded, before or after a restart. When something other than the
+  service has written to the journal, it reads the journal back.
+- A journal holds a lock on its `writer.<pid>` while open, and opening
+  deletes the claims no process holds, left by a process that ended without
+  closing (a `SIGKILL`, or running out of memory). A journal 0.5.0 or older
+  holds no such lock, so don't open a directory from both at once.
+- The code hash changes: `lib/` changed.
+
 ## 0.5.0
 
 - `package:is_journal/service.dart` and `dart run is_journal:service`: a
