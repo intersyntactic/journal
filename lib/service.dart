@@ -1,16 +1,16 @@
 /// A journal's one writer, which other processes send entries to over a Unix
 /// socket. It checks two things before it adds anything: that the sender's
-/// user may write the entry's kind, and that the entry follows the tip of
-/// its chain.
+/// user may write the entry's kind, and that the entry names the tip of its
+/// chain as previous.
 ///
 /// A request is the bytes to record, which start with a header the service
 /// reads and keeps:
 ///
-///     <kind>\n<follows>\n<the rest>
+///     <kind>\n<previous>\n<the rest>
 ///
 /// `<kind>` is a name the sender table lists for the sender's user, and
-/// `<follows>` is the hash of the entry this one follows, or `-` to start a
-/// chain. The sender closes its side when it has sent the request, and the
+/// `<previous>` is the hash of the entry before this one in its chain, or
+/// `-` to start a chain. The sender closes its side when it has sent the request, and the
 /// service answers one line: `ok <entry hash>`, or `refused <why>`, which
 /// for an entry that is not its chain's tip names the tip, so the sender can
 /// read it and try again. What it refuses it does not add.
@@ -29,7 +29,7 @@ import 'dart:typed_data';
 import 'is_journal.dart';
 
 /// The kind of an entry: a name of letters, digits, `.`, `_` and `-`. Not
-/// `-`, which reads as "follows nothing", and not [started], which only the
+/// `-`, which reads as "no previous entry", and not [started], which only the
 /// service writes.
 final class Kind {
   Kind._(this.name);
@@ -137,8 +137,8 @@ final class JournalService {
   /// The journal's last entry, which the next one names as the one before.
   var _head = EntryHash.origin;
 
-  /// The readers following entries as they are added.
-  final _followers = <_Follower>{};
+  /// The readers subscribed to entries as they are added.
+  final _subscribers = <_Subscriber>{};
 
   /// Starts writing [journal] for the senders in [senders], listening on
   /// [socket], and for readers on [readSocket] when it is given. Reads the
@@ -185,15 +185,15 @@ final class JournalService {
     return ServerSocket.bind(address, 0);
   }
 
-  /// Stops listening, ends the readers following it, removes the sockets
+  /// Stops listening, ends its subscribers, removes the sockets
   /// and closes the journal.
   Future<void> close() async {
     await _server.close();
     await _readServer?.close();
-    for (final follower in _followers.toList()) {
-      follower.socket.destroy();
+    for (final subscriber in _subscribers.toList()) {
+      subscriber.socket.destroy();
     }
-    _followers.clear();
+    _subscribers.clear();
     for (final socket in [_socket, ?_readSocket]) {
       if (socket.existsSync()) socket.deleteSync();
     }
@@ -201,8 +201,8 @@ final class JournalService {
   }
 
   /// Reads the entries back, and the chains from their headers. An entry
-  /// whose object is missing or has no header is in no chain, and nothing
-  /// can follow it, but `get` still finds it.
+  /// whose object is missing or has no header is in no chain, and no entry
+  /// can name it as previous, but `get` still finds it.
   void _load() {
     _chainOf.clear();
     _tipOf.clear();
@@ -228,9 +228,9 @@ final class JournalService {
       if (header == null) continue;
       final entry = _head;
       _index(entry, header, objectId);
-      final follows = header.follows;
-      if (follows != null && !_isTip(follows)) continue;
-      _link(entry, follows);
+      final previous = header.previous;
+      if (previous != null && !_isTip(previous)) continue;
+      _link(entry, previous);
     }
   }
 
@@ -240,7 +240,7 @@ final class JournalService {
   }
 
   /// Indexes and links [entry], just added, and sends it to the readers
-  /// following its kind.
+  /// subscribed to its kind.
   void _added(EntryHash entry, _Header header, Uint8List bytes) {
     final object = ObjectId.of(bytes);
     final raw = JournalEntry(_head, journal.codeHash, object).encode();
@@ -248,14 +248,14 @@ final class JournalService {
       _entries[entry] = raw;
       _head = entry;
       _index(entry, header, object);
-      _link(entry, header.follows);
+      _link(entry, header.previous);
     } else {
       // Something else wrote to the journal since: read it all back.
       _load();
     }
-    for (final follower in _followers) {
-      if (follower.wants(header.kind)) {
-        _send(follower.socket, entry, header, bytes);
+    for (final subscriber in _subscribers) {
+      if (subscriber.wants(header.kind)) {
+        _send(subscriber.socket, entry, header, bytes);
       }
     }
   }
@@ -265,19 +265,19 @@ final class JournalService {
     null => false,
   };
 
-  void _link(EntryHash entry, EntryHash? follows) {
-    final start = follows == null ? entry : _chainOf[follows]!;
+  void _link(EntryHash entry, EntryHash? previous) {
+    final start = previous == null ? entry : _chainOf[previous]!;
     _chainOf[entry] = start;
     _tipOf[start] = entry;
   }
 
-  EntryHash _append(Kind kind, EntryHash? follows, Uint8List rest) {
+  EntryHash _append(Kind kind, EntryHash? previous, Uint8List rest) {
     final bytes = Uint8List.fromList([
-      ...utf8.encode('$kind\n${follows?.hex ?? '-'}\n'),
+      ...utf8.encode('$kind\n${previous?.hex ?? '-'}\n'),
       ...rest,
     ]);
     final entry = journal.addEntry(bytes);
-    _added(entry, _Header(kind, follows), bytes);
+    _added(entry, _Header(kind, previous), bytes);
     return entry;
   }
 
@@ -313,11 +313,11 @@ final class JournalService {
     if (uid == null || !_senders.allows(uid, header.kind)) {
       return 'refused kind $name for user ${uid ?? 'unknown'}';
     }
-    final follows = header.follows;
-    if (follows != null) {
-      final start = _chainOf[follows];
-      if (start == null) return 'refused unknown ${follows.hex}';
-      if (_tipOf[start] != follows) {
+    final previous = header.previous;
+    if (previous != null) {
+      final start = _chainOf[previous];
+      if (start == null) return 'refused unknown ${previous.hex}';
+      if (_tipOf[start] != previous) {
         return 'refused not-tip ${_tipOf[start]!.hex}';
       }
     }
@@ -356,13 +356,13 @@ extension on JournalService {
   }
 
   void _drop(Socket socket) {
-    _followers.removeWhere((f) => f.socket == socket);
+    _subscribers.removeWhere((f) => f.socket == socket);
     socket.destroy();
   }
 
-  /// `get <entry>`, `tip <entry>`, or `follow <kinds> <after>`: `<kinds>` is
-  /// `*` or names joined by commas, `<after>` an entry, or `-` for the
-  /// journal's start.
+  /// `get <entry>`, `tip <entry>`, or `subscribe <kinds> from <entry>`:
+  /// `<kinds>` is `*` or names joined by commas, and what comes after `from`
+  /// is an entry, or `start` for the journal's start.
   void _read(Socket socket, String request) {
     void refuse(String why) {
       socket.add(utf8.encode('refused $why\n'));
@@ -377,31 +377,31 @@ extension on JournalService {
         if (start == null) return refuse('unknown $hex');
         socket.add(utf8.encode('tip ${_tipOf[start]!.hex}\n'));
         socket.close();
-      case ['follow', final kinds, final after]
-          when _Follower.parse(socket, kinds) != null &&
-              (after == '-' || EntryHash.parse(after) != null):
-        final from = after == '-' ? 0 : _at[EntryHash.parse(after)!];
+      case ['subscribe', final kinds, 'from', final after]
+          when _Subscriber.parse(socket, kinds) != null &&
+              (after == 'start' || EntryHash.parse(after) != null):
+        final from = after == 'start' ? 0 : _at[EntryHash.parse(after)!];
         if (from == null) return refuse('unknown $after');
-        final follower = _Follower.parse(socket, kinds)!;
+        final subscriber = _Subscriber.parse(socket, kinds)!;
         // Sent, marked and registered in one synchronous step, so no entry
         // added meanwhile is missed, sent twice, or lands unseen between
         // the backlog and the live entries.
-        for (final indexed in _order.skip(after == '-' ? 0 : from + 1)) {
-          if (!follower.wants(indexed.header.kind)) continue;
+        for (final indexed in _order.skip(after == 'start' ? 0 : from + 1)) {
+          if (!subscriber.wants(indexed.header.kind)) continue;
           final bytes = journal.get(indexed.object);
           if (bytes != null) {
             _send(socket, indexed.entry, indexed.header, bytes);
           }
         }
-        final head = _order.isEmpty ? '-' : _order.last.entry.hex;
+        final head = _order.isEmpty ? 'start' : _order.last.entry.hex;
         socket.add(utf8.encode('caught-up $head\n'));
-        _followers.add(follower);
+        _subscribers.add(subscriber);
       case _:
         refuse('not-a-request');
     }
   }
 
-  /// Sends [entry] as `follow` does, with its 96 bytes in hex after the
+  /// Sends [entry] as `subscribe` does, with its 96 bytes in hex after the
   /// length, so the reader can check both names: that the entry hashes to
   /// [entry], and that the bytes hash to the object it names. An entry with
   /// no header has `-` for its kind, which no kind can be. Otherwise one
@@ -431,7 +431,7 @@ extension on JournalService {
       ..add(
         utf8.encode(
           'entry ${entry.hex} ${header?.kind ?? '-'} '
-          '${header?.follows?.hex ?? '-'} ${bytes.length} $hex\n',
+          '${header?.previous?.hex ?? '-'} ${bytes.length} $hex\n',
         ),
       )
       ..add(bytes)
@@ -439,13 +439,13 @@ extension on JournalService {
   }
 }
 
-/// Writes one entry to a reader: `entry <hash> <kind> <follows> <length>`,
+/// Writes one entry to a reader: `entry <hash> <kind> <previous> <length>`,
 /// a newline, and its bytes exactly as recorded.
 void _send(Socket socket, EntryHash entry, _Header header, Uint8List bytes) {
   socket
     ..add(
       utf8.encode(
-        'entry ${entry.hex} ${header.kind} ${header.follows?.hex ?? '-'} '
+        'entry ${entry.hex} ${header.kind} ${header.previous?.hex ?? '-'} '
         '${bytes.length}\n',
       ),
     )
@@ -461,18 +461,18 @@ final class _Indexed {
   final ObjectId object;
 }
 
-/// A reader following [kinds] (null for every kind) on [socket].
-final class _Follower {
-  _Follower(this.socket, this.kinds);
+/// A reader subscribed to [kinds] (null for every kind) on [socket].
+final class _Subscriber {
+  _Subscriber(this.socket, this.kinds);
 
   final Socket socket;
   final Set<String>? kinds;
 
-  static _Follower? parse(Socket socket, String kinds) {
-    if (kinds == '*') return _Follower(socket, null);
+  static _Subscriber? parse(Socket socket, String kinds) {
+    if (kinds == '*') return _Subscriber(socket, null);
     final names = kinds.split(',');
     return names.every((n) => n == Kind.started.name || Kind.parse(n) != null)
-        ? _Follower(socket, names.toSet())
+        ? _Subscriber(socket, names.toSet())
         : null;
   }
 
@@ -480,12 +480,12 @@ final class _Follower {
 }
 
 /// The first two lines of an entry the service writes: its kind and the
-/// entry it follows, null for none.
+/// entry before it in its chain, null for none.
 final class _Header {
-  _Header(this.kind, this.follows);
+  _Header(this.kind, this.previous);
 
   final Kind kind;
-  final EntryHash? follows;
+  final EntryHash? previous;
 
   static _Header? parse(Uint8List bytes) {
     final first = bytes.indexOf(0x0a);
@@ -496,13 +496,13 @@ final class _Header {
     final kind = kindText == Kind.started.name
         ? Kind.started
         : Kind.parse(kindText);
-    final followsText = ascii.decode(
+    final previousText = ascii.decode(
       bytes.sublist(first + 1, second),
       allowInvalid: true,
     );
-    final follows = followsText == '-' ? null : EntryHash.parse(followsText);
-    if (kind == null || (followsText != '-' && follows == null)) return null;
-    return _Header(kind, follows);
+    final previous = previousText == '-' ? null : EntryHash.parse(previousText);
+    if (kind == null || (previousText != '-' && previous == null)) return null;
+    return _Header(kind, previous);
   }
 }
 
