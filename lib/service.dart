@@ -130,6 +130,13 @@ final class JournalService {
   final _order = <_Indexed>[];
   final _at = <EntryHash, int>{};
 
+  /// Every entry in the journal, as its 96 bytes, whether or not its object
+  /// can be read: an entry whose object is lost was still recorded.
+  final _entries = <EntryHash, Uint8List>{};
+
+  /// The journal's last entry, which the next one names as the one before.
+  var _head = EntryHash.origin;
+
   /// The readers following entries as they are added.
   final _followers = <_Follower>{};
 
@@ -193,19 +200,24 @@ final class JournalService {
     journal.close();
   }
 
-  /// Reads the chains from the entries' headers. An entry whose object is
-  /// missing or has no header is in no chain, and nothing can follow it.
+  /// Reads the entries back, and the chains from their headers. An entry
+  /// whose object is missing or has no header is in no chain, and nothing
+  /// can follow it, but `get` still finds it.
   void _load() {
     _chainOf.clear();
     _tipOf.clear();
     _order.clear();
     _at.clear();
+    _entries.clear();
+    _head = EntryHash.origin;
     final entries = File('${journal.dir.path}/entries');
     if (!entries.existsSync()) return;
     final raw = entries.readAsBytesSync();
     for (var at = 0; at + JournalEntry.length <= raw.length;) {
       final bytes = Uint8List.sublistView(raw, at, at += JournalEntry.length);
       final objectId = JournalEntry.parse(bytes)!.object;
+      _head = EntryHash.of(bytes);
+      _entries[_head] = bytes;
       final Uint8List? object;
       try {
         object = journal.get(objectId);
@@ -214,7 +226,7 @@ final class JournalService {
       }
       final header = object == null ? null : _Header.parse(object);
       if (header == null) continue;
-      final entry = EntryHash.of(bytes);
+      final entry = _head;
       _index(entry, header, objectId);
       final follows = header.follows;
       if (follows != null && !_isTip(follows)) continue;
@@ -230,8 +242,17 @@ final class JournalService {
   /// Indexes and links [entry], just added, and sends it to the readers
   /// following its kind.
   void _added(EntryHash entry, _Header header, Uint8List bytes) {
-    _index(entry, header, ObjectId.of(bytes));
-    _link(entry, header.follows);
+    final object = ObjectId.of(bytes);
+    final raw = JournalEntry(_head, journal.codeHash, object).encode();
+    if (EntryHash.of(raw) == entry) {
+      _entries[entry] = raw;
+      _head = entry;
+      _index(entry, header, object);
+      _link(entry, header.follows);
+    } else {
+      // Something else wrote to the journal since: read it all back.
+      _load();
+    }
     for (final follower in _followers) {
       if (follower.wants(header.kind)) {
         _send(follower.socket, entry, header, bytes);
@@ -339,8 +360,9 @@ extension on JournalService {
     socket.destroy();
   }
 
-  /// `tip <entry>`, or `follow <kinds> <after>`: `<kinds>` is `*` or names
-  /// joined by commas, `<after>` an entry, or `-` for the journal's start.
+  /// `get <entry>`, `tip <entry>`, or `follow <kinds> <after>`: `<kinds>` is
+  /// `*` or names joined by commas, `<after>` an entry, or `-` for the
+  /// journal's start.
   void _read(Socket socket, String request) {
     void refuse(String why) {
       socket.add(utf8.encode('refused $why\n'));
@@ -348,6 +370,8 @@ extension on JournalService {
     }
 
     switch (request.split(' ')) {
+      case ['get', final hex] when EntryHash.parse(hex) != null:
+        _get(socket, EntryHash.parse(hex)!);
       case ['tip', final hex] when EntryHash.parse(hex) != null:
         final start = _chainOf[EntryHash.parse(hex)!];
         if (start == null) return refuse('unknown $hex');
@@ -375,6 +399,43 @@ extension on JournalService {
       case _:
         refuse('not-a-request');
     }
+  }
+
+  /// Sends [entry] as `follow` does, with its 96 bytes in hex after the
+  /// length, so the reader can check both names: that the entry hashes to
+  /// [entry], and that the bytes hash to the object it names. An entry with
+  /// no header has `-` for its kind, which no kind can be. Otherwise one
+  /// line: `none` when the journal holds no such entry, `unreadable` when
+  /// it does but its object is `missing` or `corrupt`, `failed` when the
+  /// object could not be read.
+  void _get(Socket socket, EntryHash entry) {
+    void answer(String line) {
+      socket.add(utf8.encode('$line\n'));
+      socket.close();
+    }
+
+    final raw = _entries[entry];
+    if (raw == null) return answer('none ${entry.hex}');
+    final Uint8List? bytes;
+    try {
+      bytes = journal.get(JournalEntry.parse(raw)!.object);
+    } on CorruptObject {
+      return answer('unreadable ${entry.hex} corrupt');
+    } on FileSystemException catch (e) {
+      return answer('failed ${e.message.replaceAll('\n', ' ')}');
+    }
+    if (bytes == null) return answer('unreadable ${entry.hex} missing');
+    final header = _Header.parse(bytes);
+    final hex = raw.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    socket
+      ..add(
+        utf8.encode(
+          'entry ${entry.hex} ${header?.kind ?? '-'} '
+          '${header?.follows?.hex ?? '-'} ${bytes.length} $hex\n',
+        ),
+      )
+      ..add(bytes)
+      ..close();
   }
 }
 
