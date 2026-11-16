@@ -138,6 +138,16 @@ user, and refuses an entry that doesn't follow its chain's tip, naming the
 tip. It answers `ok <entry hash>` or `refused <why>`. On every start it adds
 an entry holding the sender table in force.
 
+`ok` means the entry and its bytes outlast the service crashing or being
+killed. It does not promise they outlast a power cut: the rename that puts the
+bytes in place is not flushed to its folder, which Dart has no call for. A
+power cut can leave an entry whose bytes are missing, so you know something
+was recorded but not what. `check()` reports it, as an entry whose object is
+missing. This is chosen, not overlooked: a sender that acts after `ok` is
+covered against crashes, and a power cut on the journal's machine is rare
+enough to accept a reported hole. What closing it would take, measured, is in
+[issue 13](https://github.com/intersyntactic/journal/issues/13).
+
     JOURNAL_DIR=/var/lib/record JOURNAL_SOCKET=/run/record/journal.sock \
       JOURNAL_SENDERS=/etc/record/senders dart run is_journal:service
 
