@@ -68,7 +68,10 @@ computed when it opened.
 There is one writer per directory. `Journal.open` creates `writer.<pid>` only
 if it is absent, so a second journal in the same process, in any isolate,
 cannot open the directory until the first calls `close()`, and a journal
-cannot be sent to another isolate, since sending would copy it. Dart has no
+cannot be sent to another isolate, since sending would copy it. The journal
+holds a lock on its `writer.<pid>` while open, so one left by a process that
+ended without closing, which no lock holds, is deleted when a journal in
+another process next opens the directory. Dart has no
 append that cannot overwrite, and two writers in one process would write over
 each other's entries. Separate processes take turns at each entry through a
 lock on `lock`, a file nothing else has a reason to open: closing any
@@ -155,8 +158,18 @@ read. A reader sends one line:
   journal's last entry of any kind when the backlog ended, or `-`, which is
   also a place to follow from next time.
 - `tip <entry>`: answered `tip <hash>`, the tip of that entry's chain.
+- `get <entry>`: that entry, as `follow` sends it, with one more word after
+  the length: the entry's 96 bytes in hex. Check both names: those 96 bytes
+  hash to `<entry>`, and bytes 64–95 of them are the sha256 of the bytes
+  that follow. An entry written without a header comes with `-` for its kind
+  and what it follows. Otherwise one line: `none <entry>` when the journal
+  holds no such entry, `unreadable <entry> missing` or `corrupt` when it
+  does but its bytes are gone or changed, or `failed <why>` when they could
+  not be read.
 
-`<hash>` is the hash `ok` answered when the entry was written.
+`<hash>` is the hash `ok` answered when the entry was written. A reader keeps
+its side of the connection open until the answer has come: the service
+closes it after `tip` and `get`.
 
 ## What it imports
 
