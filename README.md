@@ -170,7 +170,7 @@ nothing:
   sender is the `loopUser`. The service refuses an `assigned` for a path
   that was ever assigned before (`assigned-again`), a user it cannot find
   (`no-user`), and a user an open path already holds, as either its loop
-  user or its suit (`held`). A path's two users are never the same user.
+  user or its suit (`in-use`). A path's two users are never the same user.
 - `ended` closes a journey: every chain whose `assigned` names that journey,
   and every chain attached to one, refuses further entries
   (`refused closed <journey>`), and their users are free again. Its body is

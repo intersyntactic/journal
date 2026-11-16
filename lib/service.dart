@@ -23,7 +23,7 @@
 ///
 /// A journey path's chain is owned. An entry of kind [Kind.assigned] starts
 /// it and names the one user who may extend it, its loop user, and the
-/// user that wears its suit. No path is assigned twice, and no user is held
+/// user that wears its suit. No path is assigned twice, and no user is in use
 /// by two open paths. An entry of kind [Kind.ended] closes every chain of
 /// its journey. A kind the table lists as attaching starts a chain that
 /// names its parent entry on its first body line, and belongs to that
@@ -400,7 +400,7 @@ final class JournalService {
   /// Why an `assigned` with [body] cannot root a path's chain: its body is
   /// not one, its path was assigned before, a user it names is not one, or
   /// an open path holds either user. A path's two users are never the same
-  /// user, and no user is held by two open paths, as either.
+  /// user, and no user is in use by two open paths, as either.
   String? _refuseAssigned(Uint8List body) {
     final a = _Assigned.parse(body);
     if (a == null) return 'assigned-body';
@@ -409,12 +409,12 @@ final class JournalService {
     if (loopUser == null) return 'no-user ${a.loopUser}';
     final suit = _uid(a.suit);
     if (suit == null) return 'no-user ${a.suit}';
-    if (loopUser == suit) return 'held ${a.suit}';
+    if (loopUser == suit) return 'in-use ${a.suit}';
     for (final open in _paths.values) {
       if (_ended.contains(open.journey)) continue;
-      final held = {open.loopUser, open.suit};
-      if (held.contains(loopUser)) return 'held ${a.loopUser}';
-      if (held.contains(suit)) return 'held ${a.suit}';
+      final inUse = {open.loopUser, open.suit};
+      if (inUse.contains(loopUser)) return 'in-use ${a.loopUser}';
+      if (inUse.contains(suit)) return 'in-use ${a.suit}';
     }
     return null;
   }

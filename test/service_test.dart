@@ -511,7 +511,7 @@ void main() {
       ok(await send(socket, assigned(path1, journey1, '9001', '9002')));
       // The loop user, or the suit, of an open path: in its own journey or
       // another, and as either user.
-      for (final (journey, loop, suit, held) in [
+      for (final (journey, loop, suit, inUse) in [
         (journey1, '9001', '9005', '9001'),
         (journey2, '9005', '9002', '9002'),
         (journey2, '9002', '9005', '9002'),
@@ -520,7 +520,7 @@ void main() {
       ]) {
         expect(
           await send(socket, assigned(path2, journey, loop, suit)),
-          'refused held $held',
+          'refused in-use $inUse',
         );
       }
       ok(await send(socket, assigned(path2, journey2, '9003', '9004')));
@@ -650,7 +650,7 @@ void main() {
       );
       expect(
         await send(socket, assigned('a4' * 32, journey1, '9002', '9005')),
-        'refused held 9002',
+        'refused in-use 9002',
       );
       ok(await end(journey1));
       await service.close();
