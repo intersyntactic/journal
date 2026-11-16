@@ -22,7 +22,7 @@ Future<String> send(File socket, String request) async {
 }
 
 /// One entry as the read socket sends it.
-typedef Frame = ({String hash, String kind, String follows, String bytes});
+typedef Frame = ({String hash, String kind, String previous, String bytes});
 
 /// A connection to the read socket that sent one request: what comes back
 /// is lines, and [Frame]s for entries.
@@ -67,7 +67,7 @@ final class Reader {
         yield (
           hash: words[1],
           kind: words[2],
-          follows: words[3],
+          previous: words[3],
           bytes: utf8.decode(buffer.sublist(nl + 1, end)),
         );
         buffer = buffer.sublist(end);
@@ -143,14 +143,14 @@ void main() {
   group('the read socket', () {
     String ok(String answer) => answer.substring('ok '.length);
 
-    test('follows a kind from the origin, then as entries come', () async {
+    test('subscribes to a kind from the start, then as entries come', () async {
       final a = ok(await send(socket, 'turn\n-\na'));
       final w = ok(await send(socket, 'witnessed\n-\nw'));
-      final reader = await Reader.open(readSocket, 'follow turn -');
+      final reader = await Reader.open(readSocket, 'subscribe turn from start');
       expect(await reader.next(), (
         hash: a,
         kind: 'turn',
-        follows: '-',
+        previous: '-',
         bytes: 'turn\n-\na',
       ));
       // Where the backlog ends: the journal's head, of whatever kind.
@@ -160,7 +160,7 @@ void main() {
       expect(await reader.next(), (
         hash: b,
         kind: 'turn',
-        follows: a,
+        previous: a,
         bytes: 'turn\n$a\nb',
       ));
       await reader.close();
@@ -169,7 +169,10 @@ void main() {
     test('starts after the entry it is given', () async {
       final w1 = ok(await send(socket, 'witnessed\n-\nw1'));
       final w2 = ok(await send(socket, 'witnessed\n-\nw2'));
-      final reader = await Reader.open(readSocket, 'follow witnessed $w1');
+      final reader = await Reader.open(
+        readSocket,
+        'subscribe witnessed from $w1',
+      );
       expect(((await reader.next())! as Frame).hash, w2);
       expect(await reader.next(), 'caught-up $w2');
       await reader.close();
@@ -177,22 +180,25 @@ void main() {
 
     test('says it is caught up even when nothing came before', () async {
       final head = (service.journal.check() as Intact).head.hex;
-      final reader = await Reader.open(readSocket, 'follow turn -');
+      final reader = await Reader.open(readSocket, 'subscribe turn from start');
       expect(await reader.next(), 'caught-up $head');
       final a = ok(await send(socket, 'turn\n-\na'));
       expect(((await reader.next())! as Frame).hash, a);
       await reader.close();
     });
 
-    test('follows several kinds, or every kind with *', () async {
+    test('subscribes to several kinds, or every kind with *', () async {
       await send(socket, 'turn\n-\nt');
       await send(socket, 'witnessed\n-\nw');
-      var reader = await Reader.open(readSocket, 'follow *  -');
+      var reader = await Reader.open(readSocket, 'subscribe *  from start');
       expect(await reader.next(), 'refused not-a-request');
-      reader = await Reader.open(readSocket, 'follow * -');
+      reader = await Reader.open(readSocket, 'subscribe * from start');
       expect(((await reader.next())! as Frame).kind, 'started');
       await reader.close();
-      reader = await Reader.open(readSocket, 'follow witnessed,turn -');
+      reader = await Reader.open(
+        readSocket,
+        'subscribe witnessed,turn from start',
+      );
       expect(((await reader.next())! as Frame).kind, 'turn');
       expect(((await reader.next())! as Frame).kind, 'witnessed');
       await reader.close();
@@ -211,9 +217,26 @@ void main() {
 
     test('refuses an unknown starting point', () async {
       final unknown = ObjectId.of(bytesOf('nothing')).hex;
-      final reader = await Reader.open(readSocket, 'follow turn $unknown');
+      final reader = await Reader.open(
+        readSocket,
+        'subscribe turn from $unknown',
+      );
       expect(await reader.next(), 'refused unknown $unknown');
       expect(await reader.next(), isNull);
+    });
+
+    test('takes only the subscribe request, read strictly', () async {
+      for (final old in [
+        'follow turn -',
+        'subscribe turn -',
+        'subscribe turn from -',
+        'subscribe turn start',
+        'subscribe turn after start',
+      ]) {
+        final reader = await Reader.open(readSocket, old);
+        expect(await reader.next(), 'refused not-a-request', reason: old);
+        await reader.close();
+      }
     });
 
     test(
@@ -225,8 +248,8 @@ void main() {
       },
     );
 
-    test('a closing service ends the readers following it', () async {
-      final reader = await Reader.open(readSocket, 'follow turn -');
+    test('a closing service ends its subscribers', () async {
+      final reader = await Reader.open(readSocket, 'subscribe turn from start');
       expect(await reader.next(), startsWith('caught-up '));
       await send(socket, 'turn\n-\na');
       expect(await reader.next(), isA<Frame>());

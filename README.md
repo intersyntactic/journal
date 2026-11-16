@@ -131,11 +131,11 @@ directory, in bash:
 
 `package:is_journal/service.dart` is a journal's one writer, which other
 processes send entries to over a Unix socket. A request is the bytes to
-record, starting with `<kind>\n<follows>\n`: a kind the sender's user may
-write, and the entry it follows, or `-` to start a chain. The service reads
-the user from the socket, refuses a kind the sender table doesn't give that
-user, and refuses an entry that doesn't follow its chain's tip, naming the
-tip. It answers `ok <entry hash>` or `refused <why>`. On every start it adds
+record, starting with `<kind>\n<previous>\n`: a kind the sender's user may
+write, and the entry before this one in its chain, or `-` to start a chain.
+The service reads the user from the socket, refuses a kind the sender table
+doesn't give that user, and refuses an entry whose previous isn't its
+chain's tip, naming the tip. It answers `ok <entry hash>` or `refused <why>`. On every start it adds
 an entry holding the sender table in force.
 
 `ok` means the entry and its bytes outlast the service crashing or being
@@ -157,22 +157,23 @@ The sender table has one line per user, then the kinds that user may send:
     loop turn
 
 Given `JOURNAL_READ_SOCKET`, it also listens for readers there, who can only
-read. A reader sends one line:
+read. The journal publishes each entry it keeps, and a reader subscribes to
+it. A reader sends one line:
 
-- `follow <kinds> <after>`: every entry of those kinds (`*`, or names joined
-  by commas) after the entry `<after>` (`-` for the start), then each new
-  one as it is added, while the reader stays connected. Each comes as
-  `entry <hash> <kind> <follows> <length>`, a newline, and exactly
+- `subscribe <kinds> from <entry>`: every entry of those kinds (`*`, or
+  names joined by commas) after `<entry>` (`start` for the journal's start),
+  then each new one as it is added, while the reader stays connected. Each
+  comes as `entry <hash> <kind> <previous> <length>`, a newline, and exactly
   `<length>` bytes as recorded, which need not end in a newline. Between the
   backlog and the first new entry comes one line, `caught-up <head>`: the
-  journal's last entry of any kind when the backlog ended, or `-`, which is
-  also a place to follow from next time.
+  journal's last entry of any kind when the backlog ended, or `start`, which
+  is also a place to subscribe from next time.
 - `tip <entry>`: answered `tip <hash>`, the tip of that entry's chain.
-- `get <entry>`: that entry, as `follow` sends it, with one more word after
-  the length: the entry's 96 bytes in hex. Check both names: those 96 bytes
-  hash to `<entry>`, and bytes 64–95 of them are the sha256 of the bytes
-  that follow. An entry written without a header comes with `-` for its kind
-  and what it follows. Otherwise one line: `none <entry>` when the journal
+- `get <entry>`: that entry, as `subscribe` sends it, with one more word
+  after the length: the entry's 96 bytes in hex. Check both names: those 96
+  bytes hash to `<entry>`, and bytes 64–95 of them are the sha256 of the
+  bytes after it. An entry written without a header comes with `-` for
+  its kind and its previous. Otherwise one line: `none <entry>` when the journal
   holds no such entry, `unreadable <entry> missing` or `corrupt` when it
   does but its bytes are gone or changed, or `failed <why>` when they could
   not be read.

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.0
+
+- **Breaking, on the read socket:** `follow <kinds> <after>` is now
+  `subscribe <kinds> from <entry>`, with `start` for the journal's start in
+  place of `-`. The old request is refused (`refused not-a-request`); there
+  is no transition. `caught-up` says `start`, not `-`, when there is no
+  entry to name. `-` now means only "no previous entry".
+- The header's second line is called `<previous>`, not `<follows>`, in the
+  docs and the code: the entry before this one in its chain. Only the name
+  changed: no byte a writer sends, no entry and no hash differs.
+- The code hash changes: `lib/` changed.
+
 ## 0.6.0
 
 - The read socket answers `get <entry>`: the entry with its bytes, as
