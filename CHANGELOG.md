@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.8.0
+
+- **Chain ownership.** An `assigned` entry starts a journey path's chain,
+  and only the user it names as `loopUser` may extend that chain. An
+  `ended` entry closes every chain of its journey. A kind on the sender
+  table's new `attaching:` line starts a chain that names its parent on its
+  first body line and belongs to the parent's path. The README's "Chains a
+  journey path owns" gives the rules and each refusal.
+- `assigned` and `ended` are now refused unless their bodies read as the
+  README says. Any other kind is treated as it was.
+- A sender table with an `attaching:` line is refused by 0.7.0 and older,
+  which read `attaching:` as a user.
+- Who owns which chain is rebuilt from the journal on every start.
+- The code hash changes: `lib/` changed.
+
 ## 0.7.0
 
 - **Breaking, on the read socket:** `follow <kinds> <after>` is now

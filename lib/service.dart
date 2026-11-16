@@ -18,8 +18,18 @@
 /// The service reads the sender's user from the socket, as the kernel
 /// reports it, never from the request. On every start it adds an entry of
 /// kind `started` holding the sender table in force, so the record shows
-/// who was allowed to write what. Kinds mean nothing to the service: which
-/// names exist is the table's to say.
+/// who was allowed to write what. Which names exist is the table's to say,
+/// and every kind means nothing to the service but two.
+///
+/// A journey path's chain is owned. An entry of kind [Kind.assigned] starts
+/// it and names the one user who may extend it, its loop user, and the
+/// user that wears its suit. No path is assigned twice, and no user is in use
+/// by two open paths. An entry of kind [Kind.ended] closes every chain of
+/// its journey. A kind the table lists as attaching starts a chain that
+/// names its parent entry on its first body line, and belongs to that
+/// entry's path. Every other chain takes an entry from any user the table
+/// lets send its kind. Who owns what is read back from the journal on
+/// every start, so a restart refuses exactly what the live service did.
 library;
 
 import 'dart:convert';
@@ -38,6 +48,13 @@ final class Kind {
 
   /// The kind of the entry the service adds on every start.
   static final started = Kind._('started');
+
+  /// The kind that roots a journey path's chain and names the one user who
+  /// may extend it (see [JournalService]).
+  static final assigned = Kind._('assigned');
+
+  /// The kind that closes every chain of a journey (see [JournalService]).
+  static final ended = Kind._('ended');
 
   static final _name = RegExp(r'^[A-Za-z0-9._-]+$');
 
@@ -58,28 +75,50 @@ final class Kind {
 /// Which kinds each user may send: a line per user, the user's name or id
 /// and then the kinds, separated by spaces. Blank lines and lines starting
 /// with `#` are skipped.
+///
+/// A line `attaching: <kinds>` names the kinds that attach: a chain started
+/// by one of them names its parent entry on its first body line and joins
+/// that entry's journey path (see [JournalService]). No user name holds a
+/// `:`, so the line cannot be read as a user's.
 final class SenderTable {
-  SenderTable._(this.bytes, this._kinds);
+  SenderTable._(this.bytes, this._kinds, this.attaching);
 
   /// The table as it was read, which the `started` entry holds.
   final Uint8List bytes;
   final Map<int, Set<Kind>> _kinds;
 
+  /// The kinds that attach.
+  final Set<Kind> attaching;
+
+  static const _attachingLabel = 'attaching:';
+
   /// [bytes] as a table. Throws a [FormatException] naming the line when a
-  /// line has no kinds, a kind is not one [Kind.parse] takes, or a user is
-  /// not one [uidOf] finds. [uidOf] defaults to a number as itself and a
-  /// name as `id -u` prints it.
+  /// line has no kinds, a kind is not one [Kind.parse] takes, an attaching
+  /// kind is [Kind.assigned] or [Kind.ended], or a user is not one [uidOf]
+  /// finds. [uidOf] defaults to a number as itself and a name as `id -u`
+  /// prints it.
   static SenderTable parse(
     Uint8List bytes, {
     int? Function(String user) uidOf = _uidOf,
   }) {
     final kinds = <int, Set<Kind>>{};
+    final attaching = <Kind>{};
     final lines = utf8.decode(bytes).split('\n');
     for (var n = 0; n < lines.length; n++) {
       final words = lines[n].trim().split(RegExp(r'\s+'));
       if (words.first.isEmpty || words.first.startsWith('#')) continue;
       if (words.length < 2) {
         throw FormatException('line ${n + 1}: ${words.first} has no kinds');
+      }
+      if (words.first == _attachingLabel) {
+        for (final word in words.skip(1)) {
+          final kind = Kind.parse(word);
+          if (kind == null || kind == Kind.assigned || kind == Kind.ended) {
+            throw FormatException('line ${n + 1}: $word cannot attach');
+          }
+          attaching.add(kind);
+        }
+        continue;
       }
       final uid = uidOf(words.first);
       if (uid == null) {
@@ -93,17 +132,35 @@ final class SenderTable {
         (kinds[uid] ??= {}).add(kind);
       }
     }
-    return SenderTable._(bytes, kinds);
+    return SenderTable._(bytes, kinds, attaching);
   }
 
-  static int? _uidOf(String user) {
-    if (int.tryParse(user) case final uid?) return uid;
-    final r = Process.runSync('id', ['-u', user]);
-    return r.exitCode == 0 ? int.tryParse(r.stdout.toString().trim()) : null;
-  }
+  /// The attaching kinds of the table [bytes], as a `started` entry holds
+  /// it, read back without looking any user up: what attached when an entry
+  /// was added is what the table in force then said. Never throws: a kind
+  /// it cannot read attaches nothing.
+  static Set<Kind> attachingIn(Uint8List bytes) => {
+    for (final line in utf8.decode(bytes, allowMalformed: true).split('\n'))
+      if (line.trim().split(RegExp(r'\s+')) case [
+        _attachingLabel,
+        ...final words,
+      ])
+        for (final word in words)
+          if (Kind.parse(word) case final kind?
+              when kind != Kind.assigned && kind != Kind.ended)
+            kind,
+  };
 
   /// Whether the user [uid] may send [kind].
   bool allows(int uid, Kind kind) => _kinds[uid]?.contains(kind) ?? false;
+}
+
+/// [user] as a uid: a number as itself, a name as `id -u` prints it. Null
+/// when there is no such user.
+int? _uidOf(String user) {
+  if (int.tryParse(user) case final uid?) return uid;
+  final r = Process.runSync('id', ['-u', user]);
+  return r.exitCode == 0 ? int.tryParse(r.stdout.toString().trim()) : null;
 }
 
 /// The writer of [journal], listening on [socket].
@@ -136,6 +193,22 @@ final class JournalService {
 
   /// The journal's last entry, which the next one names as the one before.
   var _head = EntryHash.origin;
+
+  /// Every journey path ever assigned, by its id.
+  final _paths = <_PathId, _Path>{};
+
+  /// Each chain the path that owns it, by the chain's start: its `assigned`
+  /// root, or an attached root.
+  final _pathOf = <EntryHash, _Path>{};
+
+  /// The journeys an `ended` closed.
+  final _ended = <_JourneyId>{};
+
+  /// The kinds that attach, as the last `started` entry's table says.
+  var _attaching = <Kind>{};
+
+  /// Users looked up since the chains were last read back.
+  final _uids = <String, int?>{};
 
   /// The readers subscribed to entries as they are added.
   final _subscribers = <_Subscriber>{};
@@ -210,6 +283,11 @@ final class JournalService {
     _at.clear();
     _entries.clear();
     _head = EntryHash.origin;
+    _paths.clear();
+    _pathOf.clear();
+    _ended.clear();
+    _attaching = {};
+    _uids.clear();
     final entries = File('${journal.dir.path}/entries');
     if (!entries.existsSync()) return;
     final raw = entries.readAsBytesSync();
@@ -231,6 +309,7 @@ final class JournalService {
       final previous = header.previous;
       if (previous != null && !_isTip(previous)) continue;
       _link(entry, previous);
+      _own(entry, header, object!);
     }
   }
 
@@ -249,6 +328,7 @@ final class JournalService {
       _head = entry;
       _index(entry, header, object);
       _link(entry, header.previous);
+      _own(entry, header, bytes);
     } else {
       // Something else wrote to the journal since: read it all back.
       _load();
@@ -259,6 +339,87 @@ final class JournalService {
       }
     }
   }
+
+  /// What [entry], just linked, does to who owns which chain: an `assigned`
+  /// root hands its chain to a path, an attached root joins its parent's
+  /// path, an `ended` closes a journey, and a `started` sets the kinds that
+  /// attach. The same for an entry added now and one read back, so a
+  /// restart refuses what the live service did. Whatever it cannot read
+  /// was refused when it was sent, and owns nothing.
+  void _own(EntryHash entry, _Header header, Uint8List bytes) {
+    final body = _bodyOf(bytes);
+    final kind = header.kind;
+    if (kind == Kind.started) {
+      _attaching = SenderTable.attachingIn(body);
+    } else if (kind == Kind.ended) {
+      if (_JourneyId.endedIn(body) case final journey?) _ended.add(journey);
+    } else if (header.previous != null) {
+      return;
+    } else if (kind == Kind.assigned) {
+      if (_Assigned.parse(body) case final a?) {
+        final path = _Path(a.journey, _uid(a.loopUser), _uid(a.suit));
+        _paths[a.path] = path;
+        _pathOf[entry] = path;
+      }
+    } else if (_attaching.contains(kind)) {
+      if (_parentIn(body) case final parent?) {
+        if (_pathOf[_chainOf[parent]] case final path?) _pathOf[entry] = path;
+      }
+    }
+  }
+
+  /// Why [header], sent by [uid], breaks a path's ownership; null when it
+  /// does not. Called after the tip check, so a previous entry is a tip.
+  String? _ownership(int uid, _Header header, Uint8List request) {
+    final body = _bodyOf(request);
+    final kind = header.kind;
+    String? owned(_Path? path) => switch (path) {
+      null => null,
+      _ when _ended.contains(path.journey) => 'closed ${path.journey.hex}',
+      _ when path.loopUser != uid => 'not-owner',
+      _ => null,
+    };
+
+    if (kind == Kind.ended && _JourneyId.endedIn(body) == null) {
+      return 'ended-body';
+    }
+    if (header.previous case final previous?) {
+      if (kind == Kind.assigned) return 'assigned-not-root';
+      return owned(_pathOf[_chainOf[previous]]);
+    }
+    if (kind == Kind.assigned) return _refuseAssigned(body);
+    if (!_attaching.contains(kind)) return null;
+    final parent = _parentIn(body);
+    if (parent == null) return 'no-parent';
+    final start = _chainOf[parent];
+    if (start == null) return 'unknown ${parent.hex}';
+    final path = _pathOf[start];
+    return path == null ? 'parent-unowned' : owned(path);
+  }
+
+  /// Why an `assigned` with [body] cannot root a path's chain: its body is
+  /// not one, its path was assigned before, a user it names is not one, or
+  /// an open path holds either user. A path's two users are never the same
+  /// user, and no user is in use by two open paths, as either.
+  String? _refuseAssigned(Uint8List body) {
+    final a = _Assigned.parse(body);
+    if (a == null) return 'assigned-body';
+    if (_paths.containsKey(a.path)) return 'assigned-again ${a.path.hex}';
+    final loopUser = _uid(a.loopUser);
+    if (loopUser == null) return 'no-user ${a.loopUser}';
+    final suit = _uid(a.suit);
+    if (suit == null) return 'no-user ${a.suit}';
+    if (loopUser == suit) return 'in-use ${a.suit}';
+    for (final open in _paths.values) {
+      if (_ended.contains(open.journey)) continue;
+      final inUse = {open.loopUser, open.suit};
+      if (inUse.contains(loopUser)) return 'in-use ${a.loopUser}';
+      if (inUse.contains(suit)) return 'in-use ${a.suit}';
+    }
+    return null;
+  }
+
+  int? _uid(String user) => _uids.putIfAbsent(user, () => _uidOf(user));
 
   bool _isTip(EntryHash entry) => switch (_chainOf[entry]) {
     final start? => _tipOf[start] == entry,
@@ -320,6 +481,9 @@ final class JournalService {
       if (_tipOf[start] != previous) {
         return 'refused not-tip ${_tipOf[start]!.hex}';
       }
+    }
+    if (_ownership(uid, header, request) case final why?) {
+      return 'refused $why';
     }
     try {
       final entry = journal.addEntry(request);
@@ -477,6 +641,105 @@ final class _Subscriber {
   }
 
   bool wants(Kind kind) => kinds?.contains(kind.name) ?? true;
+}
+
+/// The id of a journey path, which only one `assigned` ever names.
+final class _PathId extends Sha256Name {
+  _PathId._(super.digest);
+
+  static _PathId? parse(String s) => switch (Sha256Name.digestOfHex(s)) {
+    final d? => _PathId._(d),
+    null => null,
+  };
+}
+
+/// The id of a journey, which an `ended` closes.
+final class _JourneyId extends Sha256Name {
+  _JourneyId._(super.digest);
+
+  static _JourneyId? parse(String s) => switch (Sha256Name.digestOfHex(s)) {
+    final d? => _JourneyId._(d),
+    null => null,
+  };
+
+  /// The journey an `ended` entry's [body] names: a JSON object whose
+  /// `journey` is a journey id. The rest of the body is the docking
+  /// station's to read. Null when it names none.
+  static _JourneyId? endedIn(Uint8List body) => switch (_json(body)) {
+    {'journey': final String journey} => parse(journey),
+    _ => null,
+  };
+}
+
+/// [body] as JSON, or null when it is not.
+Object? _json(Uint8List body) {
+  try {
+    return jsonDecode(utf8.decode(body));
+  } on FormatException {
+    return null;
+  }
+}
+
+/// A journey path as its `assigned` entry handed it out: its journey, the
+/// one user who may extend its chains, and the user that wears its suit.
+/// A user that could not be found is null, and matches no sender.
+final class _Path {
+  _Path(this.journey, this.loopUser, this.suit);
+
+  final _JourneyId journey;
+  final int? loopUser;
+  final int? suit;
+}
+
+/// An `assigned` entry's body, read strictly: exactly
+/// `{"journeyPath","journey","loopUser","suit"}`, the ids in lower-case
+/// hex and the users as names or uids.
+final class _Assigned {
+  _Assigned(this.path, this.journey, this.loopUser, this.suit);
+
+  final _PathId path;
+  final _JourneyId journey;
+  final String loopUser;
+  final String suit;
+
+  /// A user's name or uid, never one `id` could read as an option.
+  static final _user = RegExp(r'^[A-Za-z0-9_][A-Za-z0-9._-]*$');
+
+  static _Assigned? parse(Uint8List body) {
+    final json = _json(body);
+    if (json
+        case {
+          'journeyPath': final String path,
+          'journey': final String journey,
+          'loopUser': final String loopUser,
+          'suit': final String suit,
+        }
+        when json.length == 4 &&
+            _user.hasMatch(loopUser) &&
+            _user.hasMatch(suit)) {
+      return switch ((_PathId.parse(path), _JourneyId.parse(journey))) {
+        (final p?, final j?) => _Assigned(p, j, loopUser, suit),
+        _ => null,
+      };
+    }
+    return null;
+  }
+}
+
+/// What follows an entry's two header lines.
+Uint8List _bodyOf(Uint8List bytes) {
+  final first = bytes.indexOf(0x0a);
+  return Uint8List.sublistView(bytes, bytes.indexOf(0x0a, first + 1) + 1);
+}
+
+/// The parent an attached root names on its body's first line: an entry
+/// hash and a newline. Null when it names none.
+EntryHash? _parentIn(Uint8List body) {
+  final nl = body.indexOf(0x0a);
+  if (nl < 0) return null;
+  return EntryHash.parse(
+    ascii.decode(Uint8List.sublistView(body, 0, nl), allowInvalid: true),
+  );
 }
 
 /// The first two lines of an entry the service writes: its kind and the

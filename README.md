@@ -156,6 +156,44 @@ The sender table has one line per user, then the kinds that user may send:
     airlock witnessed decided returned narrowed
     loop turn
 
+### Chains a journey path owns
+
+Most chains take an entry from any user the table lets send its kind. A
+journey path's chain is different: only one user may extend it. Two kinds
+mean something to the service for this, and every other kind still means
+nothing:
+
+- `assigned` starts a path's chain (its previous must be `-`). Its body is
+  exactly `{"journeyPath","journey","loopUser","suit"}`: the path and
+  journey as 64 lower-case hex, the two users as names or uids. From then
+  on, an entry on that chain is refused (`refused not-owner`) unless its
+  sender is the `loopUser`. The service refuses an `assigned` for a path
+  that was ever assigned before (`assigned-again`), a user it cannot find
+  (`no-user`), and a user an open path already holds, as either its loop
+  user or its suit (`in-use`). A path's two users are never the same user.
+- `ended` closes a journey: every chain whose `assigned` names that journey,
+  and every chain attached to one, refuses further entries
+  (`refused closed <journey>`), and their users are free again. Its body is
+  a JSON object whose `journey` is 64 lower-case hex; the service reads
+  nothing else in it. It takes the tip check like any entry, so it can
+  follow the decisions before it on one chain. Ending a journey twice
+  changes nothing.
+
+A kind the table lists on an `attaching:` line starts a chain of its own
+that belongs to a path, such as a reply sent in chunks beside the turns. Its
+first body line names its parent: an entry hash and a newline. It is refused
+unless the parent is on a chain a path owns and the sender is that path's
+loop user, and it closes with the path's journey:
+
+    attaching: reply-chunk
+    launcher assigned
+    docking ended
+
+Who owns what is read back from the journal on every start, so a restart
+refuses exactly what the service refused before it. Each attached chain is
+judged by the `attaching:` line of the table in force when it was added,
+which the `started` entry before it holds.
+
 Given `JOURNAL_READ_SOCKET`, it also listens for readers there, who can only
 read. The journal publishes each entry it keeps, and a reader subscribes to
 it. A reader sends one line:

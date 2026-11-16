@@ -399,6 +399,272 @@ void main() {
     });
   });
 
+  group('chain ownership', () {
+    final myUid = int.parse(
+      Process.runSync('id', ['-u']).stdout.toString().trim(),
+    );
+    final path1 = 'a1' * 32, path2 = 'a2' * 32, path3 = 'a3' * 32;
+    final journey1 = 'b1' * 32, journey2 = 'b2' * 32;
+    const table = 'attaching: reply-chunk\n';
+
+    String ok(String answer) {
+      expect(answer, startsWith('ok '));
+      return answer.substring('ok '.length);
+    }
+
+    String assigned(String path, String journey, String loop, String suit) =>
+        'assigned\n-\n{"journeyPath":"$path","journey":"$journey",'
+        '"loopUser":"$loop","suit":"$suit"}';
+
+    /// The docking station's decisions chain: each decision, `ended` among
+    /// them, follows the last one.
+    String? decided;
+
+    /// Ends [journey] as the docking station does, on its decisions chain.
+    Future<String> end(String journey, {String? body}) async {
+      body ??= '{"event":"${'e0' * 32}","by":"person","journey":"$journey"}';
+      final answer = await send(socket, 'ended\n${decided ?? '-'}\n$body');
+      if (answer.startsWith('ok ')) decided = answer.substring('ok '.length);
+      return answer;
+    }
+
+    setUp(() async {
+      decided = null;
+      await service.close();
+      service = await start(
+        '$me assigned ended reply-chunk turn proposed\n$table',
+      );
+    });
+
+    test('assigned roots a chain only its loop user extends', () async {
+      final mine = ok(
+        await send(socket, assigned(path1, journey1, me, '9001')),
+      );
+      final t = ok(await send(socket, 'turn\n$mine\nmy turn'));
+      expect(await send(socket, 'proposed\n$t\nx'), startsWith('ok '));
+      final theirs = ok(
+        await send(socket, assigned(path2, journey1, '9002', '9003')),
+      );
+      expect(await send(socket, 'turn\n$theirs\nx'), 'refused not-owner');
+    });
+
+    test('the loop user, given as a uid, is the same user', () async {
+      final a = ok(
+        await send(socket, assigned(path1, journey1, '$myUid', '9001')),
+      );
+      expect(await send(socket, 'turn\n$a\nx'), startsWith('ok '));
+    });
+
+    test('reads assigned strictly', () async {
+      final good = assigned(path1, journey1, '9001', '9002');
+      for (final bad in [
+        good.replaceFirst('}', ',"extra":1}'),
+        good.replaceFirst('"suit"', '"journeyUser"'),
+        good.replaceFirst(path1, path1.toUpperCase()),
+        good.replaceFirst(journey1, 'b1'),
+        good.replaceFirst('"9001"', '9001'),
+        good.replaceFirst('"9001"', '"-n"'),
+        good.replaceFirst('{', '['),
+      ]) {
+        expect(await send(socket, bad), 'refused assigned-body', reason: bad);
+      }
+      expect(await send(socket, good), startsWith('ok '));
+    });
+
+    test('assigned starts a chain, never extends one', () async {
+      final t = ok(await send(socket, 'turn\n-\nt'));
+      final body = assigned(path1, journey1, '9001', '9002');
+      expect(
+        await send(socket, body.replaceFirst('\n-\n', '\n$t\n')),
+        'refused assigned-not-root',
+      );
+    });
+
+    test('a user it cannot find is refused, not skipped', () async {
+      expect(
+        await send(socket, assigned(path1, journey1, 'no-such-user-xq', '1')),
+        'refused no-user no-such-user-xq',
+      );
+      expect(
+        await send(
+          socket,
+          assigned(path1, journey1, '9001', 'no-such-user-xq'),
+        ),
+        'refused no-user no-such-user-xq',
+      );
+    });
+
+    test('a path is assigned once, ever', () async {
+      ok(await send(socket, assigned(path1, journey1, '9001', '9002')));
+      expect(
+        await send(socket, assigned(path1, journey2, '9003', '9004')),
+        'refused assigned-again $path1',
+      );
+      ok(await end(journey1));
+      expect(
+        await send(socket, assigned(path1, journey2, '9003', '9004')),
+        'refused assigned-again $path1',
+      );
+    });
+
+    test('an open path holds its users, in any journey', () async {
+      ok(await send(socket, assigned(path1, journey1, '9001', '9002')));
+      // The loop user, or the suit, of an open path: in its own journey or
+      // another, and as either user.
+      for (final (journey, loop, suit, inUse) in [
+        (journey1, '9001', '9005', '9001'),
+        (journey2, '9005', '9002', '9002'),
+        (journey2, '9002', '9005', '9002'),
+        (journey2, '9005', '9001', '9001'),
+        (journey2, '9005', '9005', '9005'),
+      ]) {
+        expect(
+          await send(socket, assigned(path2, journey, loop, suit)),
+          'refused in-use $inUse',
+        );
+      }
+      ok(await send(socket, assigned(path2, journey2, '9003', '9004')));
+    });
+
+    test(
+      'ended closes every chain of its journey, and frees its users',
+      () async {
+        final a = ok(await send(socket, assigned(path1, journey1, me, '9001')));
+        final b = ok(
+          await send(socket, assigned(path2, journey1, '9002', '9003')),
+        );
+        final c = ok(
+          await send(socket, assigned(path3, journey2, '9004', '9005')),
+        );
+        final t = ok(await send(socket, 'turn\n$a\nt'));
+        ok(await end(journey1));
+        expect(await send(socket, 'turn\n$t\nx'), 'refused closed $journey1');
+        expect(await send(socket, 'turn\n$b\nx'), 'refused closed $journey1');
+        expect(await send(socket, 'turn\n$c\nx'), 'refused not-owner');
+        // Ended twice changes nothing.
+        ok(await end(journey1));
+        // Its users are free for a path of another journey.
+        ok(await send(socket, assigned('a4' * 32, journey2, '9001', '9002')));
+      },
+    );
+
+    test('reads the journey of ended strictly, and only that', () async {
+      for (final bad in [
+        '{}',
+        '{"journey":"${journey1.toUpperCase()}"}',
+        '{"journey":"b1"}',
+        '{"journey":1}',
+        '["journey"]',
+        'not json',
+      ]) {
+        expect(await end(journey1, body: bad), 'refused ended-body');
+      }
+      // The rest of the body is the docking station's to read.
+      final a = ok(await send(socket, assigned(path1, journey1, me, '9001')));
+      ok(await end(journey1, body: '{"journey":"$journey1","new":[1]}'));
+      expect(await send(socket, 'turn\n$a\nx'), 'refused closed $journey1');
+    });
+
+    test('ended takes the tip check like any entry', () async {
+      ok(await end(journey1));
+      final first = decided!;
+      ok(await end(journey2));
+      expect(
+        await send(socket, 'ended\n$first\n{"journey":"$journey1"}'),
+        'refused not-tip $decided',
+      );
+    });
+
+    group('an attached chain', () {
+      test('names its parent, and its owner extends it', () async {
+        final a = ok(await send(socket, assigned(path1, journey1, me, '9001')));
+        final r = ok(await send(socket, 'reply-chunk\n-\n$a\nchunk 1'));
+        expect(
+          await send(socket, 'reply-chunk\n$r\nchunk 2'),
+          startsWith('ok '),
+        );
+        // It is a chain of its own: the path's chain goes on beside it.
+        expect(await send(socket, 'turn\n$a\nt'), startsWith('ok '));
+      });
+
+      test('is refused unless its sender owns the parent', () async {
+        final theirs = ok(
+          await send(socket, assigned(path1, journey1, '9001', '9002')),
+        );
+        expect(
+          await send(socket, 'reply-chunk\n-\n$theirs\nx'),
+          'refused not-owner',
+        );
+        final unowned = ok(await send(socket, 'turn\n-\nt'));
+        expect(
+          await send(socket, 'reply-chunk\n-\n$unowned\nx'),
+          'refused parent-unowned',
+        );
+        final unknown = 'c0' * 32;
+        expect(
+          await send(socket, 'reply-chunk\n-\n$unknown\nx'),
+          'refused unknown $unknown',
+        );
+        for (final bad in ['reply-chunk\n-\nno parent', 'reply-chunk\n-\n']) {
+          expect(await send(socket, bad), 'refused no-parent', reason: bad);
+        }
+      });
+
+      test('closes with the journey', () async {
+        final a = ok(await send(socket, assigned(path1, journey1, me, '9001')));
+        final r = ok(await send(socket, 'reply-chunk\n-\n$a\nchunk'));
+        ok(await end(journey1));
+        expect(
+          await send(socket, 'reply-chunk\n$r\nlate'),
+          'refused closed $journey1',
+        );
+        expect(
+          await send(socket, 'reply-chunk\n-\n$a\nlate'),
+          'refused closed $journey1',
+        );
+      });
+
+      test('only for kinds the table lists as attaching', () async {
+        final a = ok(await send(socket, assigned(path1, journey1, me, '9001')));
+        // A kind that does not attach starts an unowned chain, body and all.
+        expect(await send(socket, 'turn\n-\n$a\nx'), startsWith('ok '));
+      });
+    });
+
+    test('a restart refuses exactly what the live service did', () async {
+      final mine = ok(
+        await send(socket, assigned(path1, journey1, me, '9001')),
+      );
+      final theirs = ok(
+        await send(socket, assigned(path2, journey2, '9002', '9003')),
+      );
+      final r = ok(await send(socket, 'reply-chunk\n-\n$mine\nchunk'));
+      await service.close();
+      // Restarted with no attaching kinds: the attached chain was attached
+      // under the table in force when it was added, and stays attached.
+      service = await start('$me assigned ended reply-chunk turn proposed\n');
+      expect(await send(socket, 'turn\n$theirs\nx'), 'refused not-owner');
+      expect(
+        await send(socket, assigned(path2, journey1, '9004', '9005')),
+        'refused assigned-again $path2',
+      );
+      expect(
+        await send(socket, assigned('a4' * 32, journey1, '9002', '9005')),
+        'refused in-use 9002',
+      );
+      ok(await end(journey1));
+      await service.close();
+      service = await start('$me assigned ended reply-chunk turn proposed\n');
+      expect(
+        await send(socket, 'reply-chunk\n$r\nx'),
+        'refused closed $journey1',
+      );
+      expect(await send(socket, 'turn\n$mine\nx'), 'refused closed $journey1');
+      // With no attaching kinds, a reply-chunk root is unowned again.
+      expect(await send(socket, 'reply-chunk\n-\n$mine\nx'), startsWith('ok '));
+    });
+  });
+
   group('the sender table', () {
     test('refuses a kind it cannot hold, and a user it cannot find', () {
       for (final bad in [
@@ -418,6 +684,23 @@ void main() {
 
     test('takes comments and blank lines', () {
       SenderTable.parse(bytesOf('# who may write what\n\n$me turn\n'));
+    });
+
+    test('lists the kinds that attach, on a line of their own', () {
+      SenderTable.parse(bytesOf('attaching: reply-chunk x\n$me turn\n'));
+      for (final bad in [
+        'attaching:\n',
+        'attaching: tu/rn\n',
+        'attaching: assigned\n',
+        'attaching: ended\n',
+        'attaching: started\n',
+      ]) {
+        expect(
+          () => SenderTable.parse(bytesOf(bad)),
+          throwsFormatException,
+          reason: bad,
+        );
+      }
     });
   });
 }
