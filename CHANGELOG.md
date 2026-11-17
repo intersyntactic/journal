@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.9.0
+
+- **Breaking: two kinds renamed**, under the naming rulings (a name says
+  literally what the thing is). `assigned` is now
+  `users-assigned-to-journey-path`, and `ended` is now `journey-ended`.
+  The old names are no longer special: a sender table may list them as
+  ordinary kinds. No entry of either old kind was ever written to a live
+  record, so nothing has to read them.
+- Refusals renamed with them: `assigned-body`, `assigned-not-root` and
+  `assigned-again` are now `users-assigned-body`,
+  `users-assigned-not-root` and `users-assigned-again`; `ended-body` is
+  `journey-ended-body`; and an entry on an ended journey's chain is
+  refused `journey-ended <journey>`, not `closed <journey>` (a closed
+  thing can be reopened; an ended journey can't).
+- Sender tables naming the old kinds must change in the same deploy.
+- No kind is newly reserved: only `-` and `started` are refused by
+  `Kind.parse`, as in 0.8.0.
+- The code hash changes: `lib/` changed.
+
 ## 0.8.0
 
 - **Chain ownership.** An `assigned` entry starts a journey path's chain,
