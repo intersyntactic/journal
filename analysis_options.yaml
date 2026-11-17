@@ -14,6 +14,18 @@ analyzer:
     avoid_catching_errors: error
     avoid_catches_without_on_clauses: error
 
+plugins:
+  is_lint_rules:
+    version: ^0.1.0
+    diagnostics:
+      no_dynamic: true
+      no_cast_from_untyped: true
+      no_default_on_closed_type: true
+      no_ignore_comment: true
+      no_json_object_check: true
+      no_string_literal_compare: true
+      no_visible_for_testing: true
+
 linter:
   rules:
     - avoid_dynamic_calls

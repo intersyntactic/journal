@@ -557,14 +557,20 @@ extension on JournalService {
         socket.close();
       case ['subscribe', final kinds, 'from', final after]
           when _Subscriber.parse(socket, kinds) != null &&
-              (after == 'start' || EntryHash.parse(after) != null):
-        final from = after == 'start' ? 0 : _at[EntryHash.parse(after)!];
-        if (from == null) return refuse('unknown $after');
+              _SubscribeFrom.parse(after) != null:
+        final skip = switch (_SubscribeFrom.parse(after)!) {
+          _FromStart() => 0,
+          _FromAfter(:final entry) => switch (_at[entry]) {
+            final at? => at + 1,
+            null => null,
+          },
+        };
+        if (skip == null) return refuse('unknown $after');
         final subscriber = _Subscriber.parse(socket, kinds)!;
         // Sent, marked and registered in one synchronous step, so no entry
         // added meanwhile is missed, sent twice, or lands unseen between
         // the backlog and the live entries.
-        for (final indexed in _order.skip(after == 'start' ? 0 : from + 1)) {
+        for (final indexed in _order.skip(skip)) {
           if (!subscriber.wants(indexed.header.kind)) continue;
           final bytes = journal.get(indexed.object);
           if (bytes != null) {
@@ -655,6 +661,29 @@ final class _Subscriber {
   }
 
   bool wants(Kind kind) => kinds?.contains(kind.name) ?? true;
+}
+
+/// Where a subscription starts: the journal's start, or just after an entry.
+sealed class _SubscribeFrom {
+  const _SubscribeFrom();
+
+  /// `start`, or an entry's hash; null when [word] is neither.
+  static _SubscribeFrom? parse(String word) => word == 'start'
+      ? const _FromStart()
+      : switch (EntryHash.parse(word)) {
+          final entry? => _FromAfter(entry),
+          null => null,
+        };
+}
+
+final class _FromStart extends _SubscribeFrom {
+  const _FromStart();
+}
+
+final class _FromAfter extends _SubscribeFrom {
+  const _FromAfter(this.entry);
+
+  final EntryHash entry;
 }
 
 /// The id of a journey path, which only one
