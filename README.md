@@ -156,41 +156,41 @@ The sender table has one line per user, then the kinds that user may send:
     airlock witnessed decided returned narrowed
     loop turn
 
-### Chains a journey path owns
+### Chains a trajectory owns
 
 Most chains take an entry from any user the table lets send its kind. A
-journey path's chain is different: only one user may extend it. Two kinds
+trajectory's chain is different: only one user may extend it. Two kinds
 mean something to the service for this, and every other kind still means
 nothing:
 
-- `users-assigned-to-journey-path` starts a path's chain (its previous
+- `users-assigned-to-trajectory` starts a trajectory's chain (its previous
   must be `-`). Its body is exactly
-  `{"journeyPath","journey","loopUser","suit"}`: the path and journey as 64
-  lower-case hex, the two users as names or uids. From then on, an entry on
-  that chain is refused (`refused not-owner`) unless its sender is the
-  `loopUser`. The service refuses a `users-assigned-to-journey-path` for a
-  path that was ever assigned before (`users-assigned-again`), a user it
-  cannot find (`no-user`), and a user an open path already holds, as either
-  its loop user or its suit (`in-use`). A path's two users are never the
-  same user.
-- `journey-ended` closes a journey: every chain whose
-  `users-assigned-to-journey-path` names that journey, and every chain
+  `{"trajectory","mission","loopUser","suit"}`: the trajectory and mission
+  as 64 lower-case hex, the two users as names or uids. From then on, an
+  entry on that chain is refused (`refused not-owner`) unless its sender is
+  the `loopUser`. The service refuses a `users-assigned-to-trajectory` for
+  a trajectory that was ever assigned before
+  (`users-assigned-again <trajectory>`), a user it cannot find (`no-user`),
+  and a user an open trajectory already holds, as either its loop user or
+  its suit (`in-use`). A trajectory's two users are never the same user.
+- `mission-ended` closes a mission: every chain whose
+  `users-assigned-to-trajectory` names that mission, and every chain
   attached to one, refuses further entries
-  (`refused journey-ended <journey>`), and their users are free again. Its
-  body is a JSON object whose `journey` is 64 lower-case hex; the service
+  (`refused mission-ended <mission>`), and their users are free again. Its
+  body is a JSON object whose `mission` is 64 lower-case hex; the service
   reads nothing else in it. It takes the tip check like any entry, so it can
-  follow the decisions before it on one chain. Ending a journey twice
+  follow the decisions before it on one chain. Ending a mission twice
   changes nothing.
 
 A kind the table lists on an `attaching:` line starts a chain of its own
-that belongs to a path, such as a reply sent in chunks beside the turns. Its
-first body line names its parent: an entry hash and a newline. It is refused
-unless the parent is on a chain a path owns and the sender is that path's
-loop user, and it closes with the path's journey:
+that belongs to a trajectory, such as a reply sent in chunks beside the
+turns. Its first body line names its parent: an entry hash and a newline. It
+is refused unless the parent is on a chain a trajectory owns and the sender
+is that trajectory's loop user, and it closes with the trajectory's mission:
 
     attaching: reply-chunk
-    launcher users-assigned-to-journey-path
-    docking journey-ended
+    launcher users-assigned-to-trajectory
+    docking mission-ended
 
 Who owns what is read back from the journal on every start, so a restart
 refuses exactly what the service refused before it. Each attached chain is

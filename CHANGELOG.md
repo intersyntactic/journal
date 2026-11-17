@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.10.0
+
+- **Breaking: a journey is now a mission, and a journey path a
+  trajectory** (Nick, 17 Nov). The kinds are `users-assigned-to-trajectory`
+  (was `users-assigned-to-journey-path`) and `mission-ended` (was
+  `journey-ended`). The first one's body is exactly
+  `{"trajectory","mission","loopUser","suit"}` (was `journeyPath`,
+  `journey`), and the second's names its `mission` (was `journey`).
+- Refusals renamed with them: an entry on an ended mission's chain is
+  refused `mission-ended <mission>`, and a body that names no mission
+  `mission-ended-body`. `users-assigned-again` now names the trajectory.
+- No entry of the old kinds was ever written to a live record, and the
+  readers don't accept the old names: each reader reads one version.
+- Sender tables naming the old kinds must change in the same deploy.
+- No kind is newly reserved: only `-` and `started` are refused by
+  `Kind.parse`.
+- The code hash changes: `lib/` changed.
+
 ## 0.9.0
 
 - **Breaking: two kinds renamed**, under the naming rulings (a name says
