@@ -108,7 +108,7 @@ final class SenderTable {
   /// and a name as `id -u` prints it.
   static SenderTable parse(
     Uint8List bytes, {
-    int? Function(String user) uidOf = _uidOf,
+    int? Function(String user) uidOf = _uidOfUser,
   }) {
     final kinds = <int, Set<Kind>>{};
     final attaching = <Kind>{};
@@ -169,7 +169,7 @@ final class SenderTable {
 
 /// [user] as a uid: a number as itself, a name as `id -u` prints it. Null
 /// when there is no such user.
-int? _uidOf(String user) {
+int? _uidOfUser(String user) {
   if (int.tryParse(user) case final uid?) return uid;
   final r = Process.runSync('id', ['-u', user]);
   return r.exitCode == 0 ? int.tryParse(r.stdout.toString().trim()) : null;
@@ -177,7 +177,13 @@ int? _uidOf(String user) {
 
 /// The writer of [logbook], listening on [socket].
 final class LogbookService {
-  LogbookService._(this.logbook, this._senders, this._socket, this._server);
+  LogbookService._(
+    this.logbook,
+    this._senders,
+    this._socket,
+    this._server,
+    this._uidOf,
+  );
 
   /// The largest request it reads, in bytes.
   static const maxRequest = 64 << 20;
@@ -186,6 +192,7 @@ final class LogbookService {
   final SenderTable _senders;
   final File _socket;
   final ServerSocket _server;
+  final int? Function(String user) _uidOf;
   File? _readSocket;
   ServerSocket? _readServer;
 
@@ -234,18 +241,21 @@ final class LogbookService {
   /// [socket], and for readers on [readSocket] when it is given. Reads the
   /// chains back from the logbook, then adds the `started` entry. Throws a
   /// [StateError] when another service is listening on either socket; a
-  /// socket file nothing listens on is replaced.
+  /// socket file nothing listens on is replaced. [uidOf] finds the users a
+  /// `users-assigned-to-trajectory` names, as [SenderTable.parse]'s does.
   static Future<LogbookService> start(
     Logbook logbook,
     SenderTable senders,
     File socket, {
     File? readSocket,
+    int? Function(String user) uidOf = _uidOfUser,
   }) async {
     final service = LogbookService._(
       logbook,
       senders,
       socket,
       await _bind(socket),
+      uidOf,
     );
     if (readSocket != null) {
       service._readServer = await _bind(readSocket);

@@ -129,12 +129,15 @@ void main() {
       expect((service.logbook.check() as Intact).count, 2);
     });
 
-    test('a resend of an entry that got in is a duplicate, not a fork', () async {
-      final a = (await send(socket, 'turn\n-\na')).substring(3);
-      final b = (await send(socket, 'turn\n$a\nb')).substring(3);
-      await send(socket, 'turn\n$b\nc');
-      expect(await send(socket, 'turn\n$a\nb'), 'refused duplicate $b');
-    });
+    test(
+      'a resend of an entry that got in is a duplicate, not a fork',
+      () async {
+        final a = (await send(socket, 'turn\n-\na')).substring(3);
+        final b = (await send(socket, 'turn\n$a\nb')).substring(3);
+        await send(socket, 'turn\n$b\nc');
+        expect(await send(socket, 'turn\n$a\nb'), 'refused duplicate $b');
+      },
+    );
 
     test('each start names the last, so a restart is never one', () async {
       for (var i = 0; i < 2; i++) {
@@ -521,6 +524,32 @@ void main() {
         );
       },
     );
+
+    test('finds users through the uidOf it is given', () async {
+      await service.close();
+      final uids = {'loop-1': myUid, 'suit-1': 5001};
+      service = await LogbookService.start(
+        Logbook.open(dir)!,
+        SenderTable.parse(bytesOf('$me users-assigned-to-trajectory turn\n')),
+        socket,
+        readSocket: readSocket,
+        uidOf: (user) => uids[user],
+      );
+      final a = ok(
+        await send(
+          socket,
+          usersAssigned(trajectory1, mission1, 'loop-1', 'suit-1'),
+        ),
+      );
+      expect(await send(socket, 'turn\n$a\nx'), startsWith('ok '));
+      expect(
+        await send(
+          socket,
+          usersAssigned(trajectory2, mission1, 'loop-2', 'suit-1'),
+        ),
+        'refused no-user loop-2',
+      );
+    });
 
     test('a user it cannot find is refused, not skipped', () async {
       expect(
