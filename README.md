@@ -208,6 +208,17 @@ refuses exactly what the service refused before it. Each attached chain is
 judged by the `attaching:` line of the table in force when it was added,
 which the `started` entry before it holds.
 
+A test can start the service with users this machine does not have, by
+passing `LogbookService.start` a `uidOf` that maps names to uids. That
+replaces looking a name up, not being that user: the service still compares
+the uid of whoever is on the other end of the socket with the loop user's,
+and no process can choose its own. So a test that writes past a
+`users-assigned-to-trajectory` maps the loop user to its own uid; the suit,
+which never writes, can be any number:
+
+    final uids = {'loop-1': myUid, 'suit-1': 5001};
+    LogbookService.start(logbook, table, socket, uidOf: (user) => uids[user]);
+
 Given `LOGBOOK_READ_SOCKET`, it also listens for readers there, who can only
 read. The logbook publishes each entry it keeps, and a reader subscribes to
 it. A reader sends one line:
