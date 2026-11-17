@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.2.0
+
+- **Breaking: the service speaks text ids.** An entry's id on the socket
+  is the sha256 of the bytes sent, header and all (`ObjectId`), not the hash
+  of the 96 bytes that chain the logbook. That covers `ok`,
+  `refused not-tip`, a header's `previous`, an attached root's parent line,
+  `get`, `tip`, `subscribe … from`, `caught-up`, and each subscribed
+  entry's id. A sender can compute an id before sending, and a reader checks
+  every subscribed entry by hashing its bytes. `get` still sends the 96
+  bytes, whose bytes 64–95 are the id.
+- **Breaking: `refused duplicate <id>`** for bytes the logbook already
+  holds, checked before the tip, so a resend after a lost answer learns the
+  entry got in. Two entries with the same kind, previous and body are one.
+- **Each `started` names the last `started` as previous**, so no two starts
+  are the same bytes.
+- The 96-byte format and `is_logbook/1` are unchanged; a logbook written by
+  0.1.0's service names 96-byte hashes in its headers, which 0.2.0 does not
+  read as ids, so a live record starts empty again.
+- The code hash changes: `lib/service.dart` changed.
+
 ## 0.1.0
 
 The first release as is_logbook. Up to 0.9.0 this package was
