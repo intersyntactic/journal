@@ -163,19 +163,22 @@ journey path's chain is different: only one user may extend it. Two kinds
 mean something to the service for this, and every other kind still means
 nothing:
 
-- `assigned` starts a path's chain (its previous must be `-`). Its body is
-  exactly `{"journeyPath","journey","loopUser","suit"}`: the path and
-  journey as 64 lower-case hex, the two users as names or uids. From then
-  on, an entry on that chain is refused (`refused not-owner`) unless its
-  sender is the `loopUser`. The service refuses an `assigned` for a path
-  that was ever assigned before (`assigned-again`), a user it cannot find
-  (`no-user`), and a user an open path already holds, as either its loop
-  user or its suit (`in-use`). A path's two users are never the same user.
-- `ended` closes a journey: every chain whose `assigned` names that journey,
-  and every chain attached to one, refuses further entries
-  (`refused closed <journey>`), and their users are free again. Its body is
-  a JSON object whose `journey` is 64 lower-case hex; the service reads
-  nothing else in it. It takes the tip check like any entry, so it can
+- `users-assigned-to-journey-path` starts a path's chain (its previous
+  must be `-`). Its body is exactly
+  `{"journeyPath","journey","loopUser","suit"}`: the path and journey as 64
+  lower-case hex, the two users as names or uids. From then on, an entry on
+  that chain is refused (`refused not-owner`) unless its sender is the
+  `loopUser`. The service refuses a `users-assigned-to-journey-path` for a
+  path that was ever assigned before (`users-assigned-again`), a user it
+  cannot find (`no-user`), and a user an open path already holds, as either
+  its loop user or its suit (`in-use`). A path's two users are never the
+  same user.
+- `journey-ended` closes a journey: every chain whose
+  `users-assigned-to-journey-path` names that journey, and every chain
+  attached to one, refuses further entries
+  (`refused journey-ended <journey>`), and their users are free again. Its
+  body is a JSON object whose `journey` is 64 lower-case hex; the service
+  reads nothing else in it. It takes the tip check like any entry, so it can
   follow the decisions before it on one chain. Ending a journey twice
   changes nothing.
 
@@ -186,8 +189,8 @@ unless the parent is on a chain a path owns and the sender is that path's
 loop user, and it closes with the path's journey:
 
     attaching: reply-chunk
-    launcher assigned
-    docking ended
+    launcher users-assigned-to-journey-path
+    docking journey-ended
 
 Who owns what is read back from the journal on every start, so a restart
 refuses exactly what the service refused before it. Each attached chain is
