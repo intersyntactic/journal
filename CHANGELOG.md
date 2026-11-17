@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.1
+
+- `LogbookService.start` takes `uidOf`, as `SenderTable.parse` does, with
+  the real lookup as the default, so a test can start the service with users
+  this machine does not have (`suit-1`, `loop-1`). Nothing on the wire
+  changes.
+- The code hash changes: `lib/service.dart` changed.
+
 ## 0.2.0
 
 - **Breaking: the service speaks text ids.** An entry's id on the socket
