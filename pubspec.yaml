@@ -1,9 +1,9 @@
-name: is_journal
+name: is_logbook
 description: >-
-  An add-only journal of bytes: each entry chained to the one before it,
+  An add-only logbook of bytes: each entry chained to the one before it,
   naming the bytes and the hash of the code that wrote it.
-version: 0.9.0
-repository: https://github.com/intersyntactic/journal
+version: 0.1.0
+repository: https://github.com/intersyntactic/logbook
 
 environment:
   sdk: ^3.13.0

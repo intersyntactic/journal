@@ -3,8 +3,8 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:is_journal/is_journal.dart';
-import 'package:is_journal/service.dart';
+import 'package:is_logbook/is_logbook.dart';
+import 'package:is_logbook/service.dart';
 import 'package:test/test.dart';
 
 Uint8List bytesOf(String s) => utf8.encode(s);
@@ -81,11 +81,11 @@ void main() {
   late Directory dir;
   late File socket;
   late File readSocket;
-  late JournalService service;
+  late LogbookService service;
 
   /// A service on [dir] whose sender table is [table].
-  Future<JournalService> start(String table) async => JournalService.start(
-    Journal.open(dir)!,
+  Future<LogbookService> start(String table) async => LogbookService.start(
+    Logbook.open(dir)!,
     SenderTable.parse(bytesOf(table)),
     socket,
     readSocket: readSocket,
@@ -94,10 +94,10 @@ void main() {
   /// The object of entry [n] (from 1), as text.
   String object(int n) {
     final raw = File('${dir.path}/entries').readAsBytesSync();
-    final entry = JournalEntry.parse(
+    final entry = LogbookEntry.parse(
       Uint8List.sublistView(raw, (n - 1) * 96, n * 96),
     )!;
-    return utf8.decode(service.journal.get(entry.object)!);
+    return utf8.decode(service.logbook.get(entry.object)!);
   }
 
   setUp(() async {
@@ -117,7 +117,7 @@ void main() {
 
   test('adds what a sender may write, exactly as sent', () async {
     final answer = await send(socket, 'turn\n-\nhello');
-    final head = (service.journal.check() as Intact).head;
+    final head = (service.logbook.check() as Intact).head;
     expect(answer, 'ok ${head.hex}');
     expect(object(2), 'turn\n-\nhello');
   });
@@ -125,14 +125,14 @@ void main() {
   test('refuses a kind its sender may not write, and adds nothing', () async {
     expect(await send(socket, 'decided\n-\nnot mine'), startsWith('refused'));
     expect(await send(socket, 'started\n-\nnot mine'), startsWith('refused'));
-    expect((service.journal.check() as Intact).count, 1);
+    expect((service.logbook.check() as Intact).count, 1);
   });
 
   test('refuses a sender not in the table', () async {
     await service.close();
     service = await start('root turn\n');
     expect(await send(socket, 'turn\n-\nhello'), startsWith('refused'));
-    expect((service.journal.check() as Intact).count, 2);
+    expect((service.logbook.check() as Intact).count, 2);
   });
 
   test('refuses a request with no header', () async {
@@ -153,7 +153,7 @@ void main() {
         previous: '-',
         bytes: 'turn\n-\na',
       ));
-      // Where the backlog ends: the journal's head, of whatever kind.
+      // Where the backlog ends: the logbook's head, of whatever kind.
       expect(await reader.next(), 'caught-up $w');
       // The hash it reads back is the one the write answered with.
       final b = ok(await send(socket, 'turn\n$a\nb'));
@@ -179,7 +179,7 @@ void main() {
     });
 
     test('says it is caught up even when nothing came before', () async {
-      final head = (service.journal.check() as Intact).head.hex;
+      final head = (service.logbook.check() as Intact).head.hex;
       final reader = await Reader.open(readSocket, 'subscribe turn from start');
       expect(await reader.next(), 'caught-up $head');
       final a = ok(await send(socket, 'turn\n-\na'));
@@ -244,7 +244,7 @@ void main() {
       () async {
         final reader = await Reader.open(readSocket, 'turn\n-\nsneaked in');
         expect(await reader.next(), 'refused not-a-request');
-        expect((service.journal.check() as Intact).count, 1);
+        expect((service.logbook.check() as Intact).count, 1);
       },
     );
 
@@ -268,7 +268,7 @@ void main() {
       for (var at = 0; at < raw.length; at += 96) {
         final entry = Uint8List.sublistView(raw, at, at + 96);
         if (EntryHash.of(entry).hex != hash) continue;
-        final id = JournalEntry.parse(entry)!.object.hex;
+        final id = LogbookEntry.parse(entry)!.object.hex;
         return File(
           '${dir.path}/objects/${id.substring(0, 2)}/${id.substring(2)}',
         );
@@ -316,12 +316,12 @@ void main() {
         expect(utf8.decode(got.rest), 'turn\n$a\nb');
         final entry = unhex(got.line[5]);
         expect(EntryHash.of(entry).hex, b);
-        expect(JournalEntry.parse(entry)!.object, ObjectId.of(got.rest));
-        expect(JournalEntry.parse(entry)!.previous.hex, a);
+        expect(LogbookEntry.parse(entry)!.object, ObjectId.of(got.rest));
+        expect(LogbookEntry.parse(entry)!.previous.hex, a);
       },
     );
 
-    test('says none for an entry the journal does not hold', () async {
+    test('says none for an entry the logbook does not hold', () async {
       final unknown = ObjectId.of(bytesOf('nothing')).hex;
       expect((await get(unknown)).line, ['none', unknown]);
     });
@@ -330,7 +330,7 @@ void main() {
       final a = ok(await send(socket, 'turn\n-\na'));
       objectOf(a).deleteSync();
       expect((await get(a)).line, ['unreadable', a, 'missing']);
-      // Read back from the journal on a restart, it was still recorded.
+      // Read back from the logbook on a restart, it was still recorded.
       await service.close();
       service = await start('$me turn\n');
       expect((await get(a)).line, ['unreadable', a, 'missing']);
@@ -348,9 +348,9 @@ void main() {
     test(
       'finds an entry written without a header, and what came after',
       () async {
-        // Not through the service: it reads the journal back to catch up.
-        service.journal.add(bytesOf('no header'));
-        final plain = (service.journal.check() as Intact).head.hex;
+        // Not through the service: it reads the logbook back to catch up.
+        service.logbook.add(bytesOf('no header'));
+        final plain = (service.logbook.check() as Intact).head.hex;
         final a = ok(await send(socket, 'turn\n-\na'));
         final got = await get(plain);
         expect(got.line.sublist(0, 5), ['entry', plain, '-', '-', '9']);
@@ -370,7 +370,7 @@ void main() {
       final b = (await send(socket, 'turn\n$a\nb')).substring(3);
       expect(await send(socket, 'turn\n$a\nfork'), 'refused not-tip $b');
       expect(await send(socket, 'turn\n$b\nc'), startsWith('ok '));
-      expect((service.journal.check() as Intact).count, 4);
+      expect((service.logbook.check() as Intact).count, 4);
     });
 
     test('chains are separate: each "-" starts one', () async {
@@ -403,8 +403,10 @@ void main() {
     final myUid = int.parse(
       Process.runSync('id', ['-u']).stdout.toString().trim(),
     );
-    final path1 = 'a1' * 32, path2 = 'a2' * 32, path3 = 'a3' * 32;
-    final journey1 = 'b1' * 32, journey2 = 'b2' * 32;
+    final trajectory1 = 'a1' * 32,
+        trajectory2 = 'a2' * 32,
+        trajectory3 = 'a3' * 32;
+    final mission1 = 'b1' * 32, mission2 = 'b2' * 32;
     const table = 'attaching: reply-chunk\n';
 
     String ok(String answer) {
@@ -413,24 +415,24 @@ void main() {
     }
 
     String usersAssigned(
-      String path,
-      String journey,
+      String trajectory,
+      String mission,
       String loop,
       String suit,
     ) =>
-        'users-assigned-to-journey-path\n-\n{"journeyPath":"$path","journey":"$journey",'
+        'users-assigned-to-trajectory\n-\n{"trajectory":"$trajectory","mission":"$mission",'
         '"loopUser":"$loop","suit":"$suit"}';
 
     /// The docking station's decisions chain: each decision,
-    /// `journey-ended` among them, follows the last one.
+    /// `mission-ended` among them, follows the last one.
     String? decided;
 
-    /// Ends [journey] as the docking station does, on its decisions chain.
-    Future<String> end(String journey, {String? body}) async {
-      body ??= '{"event":"${'e0' * 32}","by":"person","journey":"$journey"}';
+    /// Ends [mission] as the docking station does, on its decisions chain.
+    Future<String> end(String mission, {String? body}) async {
+      body ??= '{"event":"${'e0' * 32}","by":"person","mission":"$mission"}';
       final answer = await send(
         socket,
-        'journey-ended\n${decided ?? '-'}\n$body',
+        'mission-ended\n${decided ?? '-'}\n$body',
       );
       if (answer.startsWith('ok ')) decided = answer.substring('ok '.length);
       return answer;
@@ -440,20 +442,23 @@ void main() {
       decided = null;
       await service.close();
       service = await start(
-        '$me users-assigned-to-journey-path journey-ended reply-chunk turn proposed\n$table',
+        '$me users-assigned-to-trajectory mission-ended reply-chunk turn proposed\n$table',
       );
     });
 
     test(
-      'users-assigned-to-journey-path roots a chain only its loop user extends',
+      'users-assigned-to-trajectory roots a chain only its loop user extends',
       () async {
         final mine = ok(
-          await send(socket, usersAssigned(path1, journey1, me, '9001')),
+          await send(socket, usersAssigned(trajectory1, mission1, me, '9001')),
         );
         final t = ok(await send(socket, 'turn\n$mine\nmy turn'));
         expect(await send(socket, 'proposed\n$t\nx'), startsWith('ok '));
         final theirs = ok(
-          await send(socket, usersAssigned(path2, journey1, '9002', '9003')),
+          await send(
+            socket,
+            usersAssigned(trajectory2, mission1, '9002', '9003'),
+          ),
         );
         expect(await send(socket, 'turn\n$theirs\nx'), 'refused not-owner');
       },
@@ -461,18 +466,21 @@ void main() {
 
     test('the loop user, given as a uid, is the same user', () async {
       final a = ok(
-        await send(socket, usersAssigned(path1, journey1, '$myUid', '9001')),
+        await send(
+          socket,
+          usersAssigned(trajectory1, mission1, '$myUid', '9001'),
+        ),
       );
       expect(await send(socket, 'turn\n$a\nx'), startsWith('ok '));
     });
 
-    test('reads users-assigned-to-journey-path strictly', () async {
-      final good = usersAssigned(path1, journey1, '9001', '9002');
+    test('reads users-assigned-to-trajectory strictly', () async {
+      final good = usersAssigned(trajectory1, mission1, '9001', '9002');
       for (final bad in [
         good.replaceFirst('}', ',"extra":1}'),
-        good.replaceFirst('"suit"', '"journeyUser"'),
-        good.replaceFirst(path1, path1.toUpperCase()),
-        good.replaceFirst(journey1, 'b1'),
+        good.replaceFirst('"suit"', '"missionUser"'),
+        good.replaceFirst(trajectory1, trajectory1.toUpperCase()),
+        good.replaceFirst(mission1, 'b1'),
         good.replaceFirst('"9001"', '9001'),
         good.replaceFirst('"9001"', '"-n"'),
         good.replaceFirst('{', '['),
@@ -487,10 +495,10 @@ void main() {
     });
 
     test(
-      'users-assigned-to-journey-path starts a chain, never extends one',
+      'users-assigned-to-trajectory starts a chain, never extends one',
       () async {
         final t = ok(await send(socket, 'turn\n-\nt'));
-        final body = usersAssigned(path1, journey1, '9001', '9002');
+        final body = usersAssigned(trajectory1, mission1, '9001', '9002');
         expect(
           await send(socket, body.replaceFirst('\n-\n', '\n$t\n')),
           'refused users-assigned-not-root',
@@ -502,117 +510,144 @@ void main() {
       expect(
         await send(
           socket,
-          usersAssigned(path1, journey1, 'no-such-user-xq', '1'),
+          usersAssigned(trajectory1, mission1, 'no-such-user-xq', '1'),
         ),
         'refused no-user no-such-user-xq',
       );
       expect(
         await send(
           socket,
-          usersAssigned(path1, journey1, '9001', 'no-such-user-xq'),
+          usersAssigned(trajectory1, mission1, '9001', 'no-such-user-xq'),
         ),
         'refused no-user no-such-user-xq',
       );
     });
 
-    test('a path is assigned once, ever', () async {
-      ok(await send(socket, usersAssigned(path1, journey1, '9001', '9002')));
-      expect(
-        await send(socket, usersAssigned(path1, journey2, '9003', '9004')),
-        'refused users-assigned-again $path1',
+    test('a trajectory is assigned once, ever', () async {
+      ok(
+        await send(
+          socket,
+          usersAssigned(trajectory1, mission1, '9001', '9002'),
+        ),
       );
-      ok(await end(journey1));
       expect(
-        await send(socket, usersAssigned(path1, journey2, '9003', '9004')),
-        'refused users-assigned-again $path1',
+        await send(
+          socket,
+          usersAssigned(trajectory1, mission2, '9003', '9004'),
+        ),
+        'refused users-assigned-again $trajectory1',
+      );
+      ok(await end(mission1));
+      expect(
+        await send(
+          socket,
+          usersAssigned(trajectory1, mission2, '9003', '9004'),
+        ),
+        'refused users-assigned-again $trajectory1',
       );
     });
 
-    test('an open path holds its users, in any journey', () async {
-      ok(await send(socket, usersAssigned(path1, journey1, '9001', '9002')));
-      // The loop user, or the suit, of an open path: in its own journey or
+    test('an open trajectory holds its users, in any mission', () async {
+      ok(
+        await send(
+          socket,
+          usersAssigned(trajectory1, mission1, '9001', '9002'),
+        ),
+      );
+      // The loop user, or the suit, of an open trajectory: in its own mission or
       // another, and as either user.
-      for (final (journey, loop, suit, inUse) in [
-        (journey1, '9001', '9005', '9001'),
-        (journey2, '9005', '9002', '9002'),
-        (journey2, '9002', '9005', '9002'),
-        (journey2, '9005', '9001', '9001'),
-        (journey2, '9005', '9005', '9005'),
+      for (final (mission, loop, suit, inUse) in [
+        (mission1, '9001', '9005', '9001'),
+        (mission2, '9005', '9002', '9002'),
+        (mission2, '9002', '9005', '9002'),
+        (mission2, '9005', '9001', '9001'),
+        (mission2, '9005', '9005', '9005'),
       ]) {
         expect(
-          await send(socket, usersAssigned(path2, journey, loop, suit)),
+          await send(socket, usersAssigned(trajectory2, mission, loop, suit)),
           'refused in-use $inUse',
         );
       }
-      ok(await send(socket, usersAssigned(path2, journey2, '9003', '9004')));
+      ok(
+        await send(
+          socket,
+          usersAssigned(trajectory2, mission2, '9003', '9004'),
+        ),
+      );
     });
 
     test(
-      'journey-ended closes every chain of its journey, and frees its users',
+      'mission-ended closes every chain of its mission, and frees its users',
       () async {
         final a = ok(
-          await send(socket, usersAssigned(path1, journey1, me, '9001')),
+          await send(socket, usersAssigned(trajectory1, mission1, me, '9001')),
         );
         final b = ok(
-          await send(socket, usersAssigned(path2, journey1, '9002', '9003')),
+          await send(
+            socket,
+            usersAssigned(trajectory2, mission1, '9002', '9003'),
+          ),
         );
         final c = ok(
-          await send(socket, usersAssigned(path3, journey2, '9004', '9005')),
+          await send(
+            socket,
+            usersAssigned(trajectory3, mission2, '9004', '9005'),
+          ),
         );
         final t = ok(await send(socket, 'turn\n$a\nt'));
-        ok(await end(journey1));
+        ok(await end(mission1));
         expect(
           await send(socket, 'turn\n$t\nx'),
-          'refused journey-ended $journey1',
+          'refused mission-ended $mission1',
         );
         expect(
           await send(socket, 'turn\n$b\nx'),
-          'refused journey-ended $journey1',
+          'refused mission-ended $mission1',
         );
         expect(await send(socket, 'turn\n$c\nx'), 'refused not-owner');
         // Ended twice changes nothing.
-        ok(await end(journey1));
-        // Its users are free for a path of another journey.
+        ok(await end(mission1));
+        // Its users are free for a trajectory of another mission.
         ok(
           await send(
             socket,
-            usersAssigned('a4' * 32, journey2, '9001', '9002'),
+            usersAssigned('a4' * 32, mission2, '9001', '9002'),
           ),
         );
       },
     );
 
     test(
-      'reads the journey of journey-ended strictly, and only that',
+      'reads the mission of mission-ended strictly, and only that',
       () async {
         for (final bad in [
           '{}',
-          '{"journey":"${journey1.toUpperCase()}"}',
-          '{"journey":"b1"}',
-          '{"journey":1}',
-          '["journey"]',
+          '{"mission":"${mission1.toUpperCase()}"}',
+          '{"mission":"b1"}',
+          '{"mission":1}',
+          '["mission"]',
           'not json',
         ]) {
-          expect(await end(journey1, body: bad), 'refused journey-ended-body');
+          expect(await end(mission1, body: bad), 'refused mission-ended-body');
         }
         // The rest of the body is the docking station's to read.
         final a = ok(
-          await send(socket, usersAssigned(path1, journey1, me, '9001')),
+          await send(socket, usersAssigned(trajectory1, mission1, me, '9001')),
         );
-        ok(await end(journey1, body: '{"journey":"$journey1","new":[1]}'));
+        ok(await end(mission1, body: '{"mission":"$mission1","new":[1]}'));
         expect(
           await send(socket, 'turn\n$a\nx'),
-          'refused journey-ended $journey1',
+          'refused mission-ended $mission1',
         );
       },
     );
 
-    test('journey-ended takes the tip check like any entry', () async {
-      ok(await end(journey1));
+    test('mission-ended takes the tip check like any entry', () async {
+      ok(await end(mission1));
       final first = decided!;
-      ok(await end(journey2));
+      ok(await end(mission2));
       expect(
-        await send(socket, 'journey-ended\n$first\n{"journey":"$journey1"}'),
+        await send(socket, 'mission-ended\n$first\n{"mission":"$mission1"}'),
         'refused not-tip $decided',
       );
     });
@@ -620,20 +655,23 @@ void main() {
     group('an attached chain', () {
       test('names its parent, and its owner extends it', () async {
         final a = ok(
-          await send(socket, usersAssigned(path1, journey1, me, '9001')),
+          await send(socket, usersAssigned(trajectory1, mission1, me, '9001')),
         );
         final r = ok(await send(socket, 'reply-chunk\n-\n$a\nchunk 1'));
         expect(
           await send(socket, 'reply-chunk\n$r\nchunk 2'),
           startsWith('ok '),
         );
-        // It is a chain of its own: the path's chain goes on beside it.
+        // It is a chain of its own: the trajectory's chain goes on beside it.
         expect(await send(socket, 'turn\n$a\nt'), startsWith('ok '));
       });
 
       test('is refused unless its sender owns the parent', () async {
         final theirs = ok(
-          await send(socket, usersAssigned(path1, journey1, '9001', '9002')),
+          await send(
+            socket,
+            usersAssigned(trajectory1, mission1, '9001', '9002'),
+          ),
         );
         expect(
           await send(socket, 'reply-chunk\n-\n$theirs\nx'),
@@ -654,25 +692,25 @@ void main() {
         }
       });
 
-      test('closes with the journey', () async {
+      test('closes with the mission', () async {
         final a = ok(
-          await send(socket, usersAssigned(path1, journey1, me, '9001')),
+          await send(socket, usersAssigned(trajectory1, mission1, me, '9001')),
         );
         final r = ok(await send(socket, 'reply-chunk\n-\n$a\nchunk'));
-        ok(await end(journey1));
+        ok(await end(mission1));
         expect(
           await send(socket, 'reply-chunk\n$r\nlate'),
-          'refused journey-ended $journey1',
+          'refused mission-ended $mission1',
         );
         expect(
           await send(socket, 'reply-chunk\n-\n$a\nlate'),
-          'refused journey-ended $journey1',
+          'refused mission-ended $mission1',
         );
       });
 
       test('only for kinds the table lists as attaching', () async {
         final a = ok(
-          await send(socket, usersAssigned(path1, journey1, me, '9001')),
+          await send(socket, usersAssigned(trajectory1, mission1, me, '9001')),
         );
         // A kind that does not attach starts an unowned chain, body and all.
         expect(await send(socket, 'turn\n-\n$a\nx'), startsWith('ok '));
@@ -681,39 +719,45 @@ void main() {
 
     test('a restart refuses exactly what the live service did', () async {
       final mine = ok(
-        await send(socket, usersAssigned(path1, journey1, me, '9001')),
+        await send(socket, usersAssigned(trajectory1, mission1, me, '9001')),
       );
       final theirs = ok(
-        await send(socket, usersAssigned(path2, journey2, '9002', '9003')),
+        await send(
+          socket,
+          usersAssigned(trajectory2, mission2, '9002', '9003'),
+        ),
       );
       final r = ok(await send(socket, 'reply-chunk\n-\n$mine\nchunk'));
       await service.close();
       // Restarted with no attaching kinds: the attached chain was attached
       // under the table in force when it was added, and stays attached.
       service = await start(
-        '$me users-assigned-to-journey-path journey-ended reply-chunk turn proposed\n',
+        '$me users-assigned-to-trajectory mission-ended reply-chunk turn proposed\n',
       );
       expect(await send(socket, 'turn\n$theirs\nx'), 'refused not-owner');
       expect(
-        await send(socket, usersAssigned(path2, journey1, '9004', '9005')),
-        'refused users-assigned-again $path2',
+        await send(
+          socket,
+          usersAssigned(trajectory2, mission1, '9004', '9005'),
+        ),
+        'refused users-assigned-again $trajectory2',
       );
       expect(
-        await send(socket, usersAssigned('a4' * 32, journey1, '9002', '9005')),
+        await send(socket, usersAssigned('a4' * 32, mission1, '9002', '9005')),
         'refused in-use 9002',
       );
-      ok(await end(journey1));
+      ok(await end(mission1));
       await service.close();
       service = await start(
-        '$me users-assigned-to-journey-path journey-ended reply-chunk turn proposed\n',
+        '$me users-assigned-to-trajectory mission-ended reply-chunk turn proposed\n',
       );
       expect(
         await send(socket, 'reply-chunk\n$r\nx'),
-        'refused journey-ended $journey1',
+        'refused mission-ended $mission1',
       );
       expect(
         await send(socket, 'turn\n$mine\nx'),
-        'refused journey-ended $journey1',
+        'refused mission-ended $mission1',
       );
       // With no attaching kinds, a reply-chunk root is unowned again.
       expect(await send(socket, 'reply-chunk\n-\n$mine\nx'), startsWith('ok '));
@@ -746,8 +790,8 @@ void main() {
       for (final bad in [
         'attaching:\n',
         'attaching: tu/rn\n',
-        'attaching: users-assigned-to-journey-path\n',
-        'attaching: journey-ended\n',
+        'attaching: users-assigned-to-trajectory\n',
+        'attaching: mission-ended\n',
         'attaching: started\n',
       ]) {
         expect(

@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.1.0
+
+The first release as is_logbook. Up to 0.9.0 this package was
+[is_journal](https://pub.dev/packages/is_journal); its history is below.
+
+- **Breaking: the package is is_logbook** (repository
+  intersyntactic/logbook). The library is `package:is_logbook/is_logbook.dart`,
+  the class `Logbook` (and `LogbookEntry`, `LogbookCheck`, `NoLogbook`,
+  `LogbookService`), the executables `is_logbook:service` and
+  `is_logbook:code_hash`, and the define a compiled build names its code
+  with `is_logbook.code`.
+- **Breaking: the format is `is_logbook/1`.** The first entry names the
+  sha256 of `is_logbook/1` as the entry before it, so no record written by
+  is_journal chains here. None is carried over: a logbook starts empty.
+- **Breaking: the service reads `LOGBOOK_DIR`, `LOGBOOK_SOCKET`,
+  `LOGBOOK_SENDERS` and `LOGBOOK_READ_SOCKET`**, and no longer the
+  `JOURNAL_*` names. The README's example sockets are `logbook.sock`.
+- The code hash changes: the package is named `is_logbook` in the hash's
+  list, and `lib/` changed.
+- **Breaking: a journey is now a mission, and a journey path a
+  trajectory** (Nick, 17 Nov). The kinds are `users-assigned-to-trajectory`
+  (was `users-assigned-to-journey-path`) and `mission-ended` (was
+  `journey-ended`). The first one's body is exactly
+  `{"trajectory","mission","loopUser","suit"}` (was `journeyPath`,
+  `journey`), and the second's names its `mission` (was `journey`).
+- Refusals renamed with them: an entry on an ended mission's chain is
+  refused `mission-ended <mission>`, and a body that names no mission
+  `mission-ended-body`. `users-assigned-again` now names the trajectory.
+- No entry of the old kinds was ever written to a live record, and the
+  readers don't accept the old names: each reader reads one version.
+- Sender tables naming the old kinds must change in the same deploy.
+- No kind is newly reserved: only `-` and `started` are refused by
+  `Kind.parse`.
+
+# Before the rename: is_journal
+
 ## 0.9.0
 
 - **Breaking: two kinds renamed**, under the naming rulings (a name says

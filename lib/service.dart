@@ -1,4 +1,4 @@
-/// A journal's one writer, which other processes send entries to over a Unix
+/// A logbook's one writer, which other processes send entries to over a Unix
 /// socket. It checks two things before it adds anything: that the sender's
 /// user may write the entry's kind, and that the entry names the tip of its
 /// chain as previous.
@@ -21,14 +21,15 @@
 /// who was allowed to write what. Which names exist is the table's to say,
 /// and every kind means nothing to the service but two.
 ///
-/// A journey path's chain is owned. An entry of kind
-/// [Kind.usersAssignedToJourneyPath] starts it and names the one user who
-/// may extend it, its loop user, and the user that wears its suit. No path
-/// is assigned twice, and no user is in use by two open paths. An entry of
-/// kind [Kind.journeyEnded] closes every chain of its journey. A kind the
-/// table lists as attaching starts a chain that names its parent entry on
-/// its first body line, and belongs to that entry's path. Every other chain takes an entry from any user the table
-/// lets send its kind. Who owns what is read back from the journal on
+/// A trajectory's chain is owned. An entry of kind
+/// [Kind.usersAssignedToTrajectory] starts it and names the one user who
+/// may extend it, its loop user, and the user that wears its suit. No
+/// trajectory is assigned twice, and no user is in use by two open
+/// trajectories. An entry of kind [Kind.missionEnded] closes every chain of
+/// its mission. A kind the table lists as attaching starts a chain that
+/// names its parent entry on its first body line, and belongs to that
+/// entry's trajectory. Every other chain takes an entry from any user the
+/// table lets send its kind. Who owns what is read back from the logbook on
 /// every start, so a restart refuses exactly what the live service did.
 library;
 
@@ -36,7 +37,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'is_journal.dart';
+import 'is_logbook.dart';
 
 /// The kind of an entry: a name of letters, digits, `.`, `_` and `-`. Not
 /// `-`, which reads as "no previous entry", and not [started], which only the
@@ -49,14 +50,14 @@ final class Kind {
   /// The kind of the entry the service adds on every start.
   static final started = Kind._('started');
 
-  /// The kind that roots a journey path's chain and names the one user who
-  /// may extend it (see [JournalService]).
-  static final usersAssignedToJourneyPath = Kind._(
-    'users-assigned-to-journey-path',
+  /// The kind that roots a trajectory's chain and names the one user who
+  /// may extend it (see [LogbookService]).
+  static final usersAssignedToTrajectory = Kind._(
+    'users-assigned-to-trajectory',
   );
 
-  /// The kind that closes every chain of a journey (see [JournalService]).
-  static final journeyEnded = Kind._('journey-ended');
+  /// The kind that closes every chain of a mission (see [LogbookService]).
+  static final missionEnded = Kind._('mission-ended');
 
   static final _name = RegExp(r'^[A-Za-z0-9._-]+$');
 
@@ -80,7 +81,7 @@ final class Kind {
 ///
 /// A line `attaching: <kinds>` names the kinds that attach: a chain started
 /// by one of them names its parent entry on its first body line and joins
-/// that entry's journey path (see [JournalService]). No user name holds a
+/// that entry's trajectory (see [LogbookService]). No user name holds a
 /// `:`, so the line cannot be read as a user's.
 final class SenderTable {
   SenderTable._(this.bytes, this._kinds, this.attaching);
@@ -96,7 +97,7 @@ final class SenderTable {
 
   /// [bytes] as a table. Throws a [FormatException] naming the line when a
   /// line has no kinds, a kind is not one [Kind.parse] takes, an attaching
-  /// kind is [Kind.usersAssignedToJourneyPath] or [Kind.journeyEnded], or a
+  /// kind is [Kind.usersAssignedToTrajectory] or [Kind.missionEnded], or a
   /// user is not one [uidOf] finds. [uidOf] defaults to a number as itself
   /// and a name as `id -u` prints it.
   static SenderTable parse(
@@ -116,8 +117,8 @@ final class SenderTable {
         for (final word in words.skip(1)) {
           final kind = Kind.parse(word);
           if (kind == null ||
-              kind == Kind.usersAssignedToJourneyPath ||
-              kind == Kind.journeyEnded) {
+              kind == Kind.usersAssignedToTrajectory ||
+              kind == Kind.missionEnded) {
             throw FormatException('line ${n + 1}: $word cannot attach');
           }
           attaching.add(kind);
@@ -151,8 +152,8 @@ final class SenderTable {
       ])
         for (final word in words)
           if (Kind.parse(word) case final kind?
-              when kind != Kind.usersAssignedToJourneyPath &&
-                  kind != Kind.journeyEnded)
+              when kind != Kind.usersAssignedToTrajectory &&
+                  kind != Kind.missionEnded)
             kind,
   };
 
@@ -168,14 +169,14 @@ int? _uidOf(String user) {
   return r.exitCode == 0 ? int.tryParse(r.stdout.toString().trim()) : null;
 }
 
-/// The writer of [journal], listening on [socket].
-final class JournalService {
-  JournalService._(this.journal, this._senders, this._socket, this._server);
+/// The writer of [logbook], listening on [socket].
+final class LogbookService {
+  LogbookService._(this.logbook, this._senders, this._socket, this._server);
 
   /// The largest request it reads, in bytes.
   static const maxRequest = 64 << 20;
 
-  final Journal journal;
+  final Logbook logbook;
   final SenderTable _senders;
   final File _socket;
   final ServerSocket _server;
@@ -188,26 +189,26 @@ final class JournalService {
   /// Each chain's start, mapped to its tip.
   final _tipOf = <EntryHash, EntryHash>{};
 
-  /// Every entry with a header, in the journal's order, and where each is.
+  /// Every entry with a header, in the logbook's order, and where each is.
   final _order = <_Indexed>[];
   final _at = <EntryHash, int>{};
 
-  /// Every entry in the journal, as its 96 bytes, whether or not its object
+  /// Every entry in the logbook, as its 96 bytes, whether or not its object
   /// can be read: an entry whose object is lost was still recorded.
   final _entries = <EntryHash, Uint8List>{};
 
-  /// The journal's last entry, which the next one names as the one before.
+  /// The logbook's last entry, which the next one names as the one before.
   var _head = EntryHash.origin;
 
-  /// Every journey path ever assigned, by its id.
-  final _paths = <_PathId, _Path>{};
+  /// Every trajectory ever assigned, by its id.
+  final _trajectories = <_TrajectoryId, _Trajectory>{};
 
-  /// Each chain the path that owns it, by the chain's start: its
-  /// `users-assigned-to-journey-path` root, or an attached root.
-  final _pathOf = <EntryHash, _Path>{};
+  /// Each chain the trajectory that owns it, by the chain's start: its
+  /// `users-assigned-to-trajectory` root, or an attached root.
+  final _trajectoryOf = <EntryHash, _Trajectory>{};
 
-  /// The journeys a `journey-ended` closed.
-  final _endedJourneys = <_JourneyId>{};
+  /// The missions a `mission-ended` closed.
+  final _endedMissions = <_MissionId>{};
 
   /// The kinds that attach, as the last `started` entry's table says.
   var _attaching = <Kind>{};
@@ -218,19 +219,19 @@ final class JournalService {
   /// The readers subscribed to entries as they are added.
   final _subscribers = <_Subscriber>{};
 
-  /// Starts writing [journal] for the senders in [senders], listening on
+  /// Starts writing [logbook] for the senders in [senders], listening on
   /// [socket], and for readers on [readSocket] when it is given. Reads the
-  /// chains back from the journal, then adds the `started` entry. Throws a
+  /// chains back from the logbook, then adds the `started` entry. Throws a
   /// [StateError] when another service is listening on either socket; a
   /// socket file nothing listens on is replaced.
-  static Future<JournalService> start(
-    Journal journal,
+  static Future<LogbookService> start(
+    Logbook logbook,
     SenderTable senders,
     File socket, {
     File? readSocket,
   }) async {
-    final service = JournalService._(
-      journal,
+    final service = LogbookService._(
+      logbook,
       senders,
       socket,
       await _bind(socket),
@@ -264,7 +265,7 @@ final class JournalService {
   }
 
   /// Stops listening, ends its subscribers, removes the sockets
-  /// and closes the journal.
+  /// and closes the logbook.
   Future<void> close() async {
     await _server.close();
     await _readServer?.close();
@@ -275,7 +276,7 @@ final class JournalService {
     for (final socket in [_socket, ?_readSocket]) {
       if (socket.existsSync()) socket.deleteSync();
     }
-    journal.close();
+    logbook.close();
   }
 
   /// Reads the entries back, and the chains from their headers. An entry
@@ -288,22 +289,22 @@ final class JournalService {
     _at.clear();
     _entries.clear();
     _head = EntryHash.origin;
-    _paths.clear();
-    _pathOf.clear();
-    _endedJourneys.clear();
+    _trajectories.clear();
+    _trajectoryOf.clear();
+    _endedMissions.clear();
     _attaching = {};
     _uids.clear();
-    final entries = File('${journal.dir.path}/entries');
+    final entries = File('${logbook.dir.path}/entries');
     if (!entries.existsSync()) return;
     final raw = entries.readAsBytesSync();
-    for (var at = 0; at + JournalEntry.length <= raw.length;) {
-      final bytes = Uint8List.sublistView(raw, at, at += JournalEntry.length);
-      final objectId = JournalEntry.parse(bytes)!.object;
+    for (var at = 0; at + LogbookEntry.length <= raw.length;) {
+      final bytes = Uint8List.sublistView(raw, at, at += LogbookEntry.length);
+      final objectId = LogbookEntry.parse(bytes)!.object;
       _head = EntryHash.of(bytes);
       _entries[_head] = bytes;
       final Uint8List? object;
       try {
-        object = journal.get(objectId);
+        object = logbook.get(objectId);
       } on CorruptObject {
         continue;
       }
@@ -327,7 +328,7 @@ final class JournalService {
   /// subscribed to its kind.
   void _added(EntryHash entry, _Header header, Uint8List bytes) {
     final object = ObjectId.of(bytes);
-    final raw = JournalEntry(_head, journal.codeHash, object).encode();
+    final raw = LogbookEntry(_head, logbook.codeHash, object).encode();
     if (EntryHash.of(raw) == entry) {
       _entries[entry] = raw;
       _head = entry;
@@ -335,7 +336,7 @@ final class JournalService {
       _link(entry, header.previous);
       _own(entry, header, bytes);
     } else {
-      // Something else wrote to the journal since: read it all back.
+      // Something else wrote to the logbook since: read it all back.
       _load();
     }
     for (final subscriber in _subscribers) {
@@ -346,9 +347,9 @@ final class JournalService {
   }
 
   /// What [entry], just linked, does to who owns which chain: a
-  /// `users-assigned-to-journey-path` root hands its chain to a path, an
-  /// attached root joins its parent's path, a `journey-ended` closes a
-  /// journey, and a `started` sets the kinds that attach. The same for an
+  /// `users-assigned-to-trajectory` root hands its chain to a trajectory, an
+  /// attached root joins its parent's trajectory, a `mission-ended` closes a
+  /// mission, and a `started` sets the kinds that attach. The same for an
   /// entry added now and one read back, so a restart refuses what the live
   /// service did. Whatever it cannot read was refused when it was sent, and
   /// owns nothing.
@@ -357,48 +358,54 @@ final class JournalService {
     final kind = header.kind;
     if (kind == Kind.started) {
       _attaching = SenderTable.attachingIn(body);
-    } else if (kind == Kind.journeyEnded) {
-      if (_JourneyId.journeyEndedIn(body) case final journey?) {
-        _endedJourneys.add(journey);
+    } else if (kind == Kind.missionEnded) {
+      if (_MissionId.missionEndedIn(body) case final mission?) {
+        _endedMissions.add(mission);
       }
     } else if (header.previous != null) {
       return;
-    } else if (kind == Kind.usersAssignedToJourneyPath) {
+    } else if (kind == Kind.usersAssignedToTrajectory) {
       if (_UsersAssigned.parse(body) case final a?) {
-        final path = _Path(a.journey, _uid(a.loopUser), _uid(a.suit));
-        _paths[a.path] = path;
-        _pathOf[entry] = path;
+        final trajectory = _Trajectory(
+          a.mission,
+          _uid(a.loopUser),
+          _uid(a.suit),
+        );
+        _trajectories[a.trajectory] = trajectory;
+        _trajectoryOf[entry] = trajectory;
       }
     } else if (_attaching.contains(kind)) {
       if (_parentIn(body) case final parent?) {
-        if (_pathOf[_chainOf[parent]] case final path?) _pathOf[entry] = path;
+        if (_trajectoryOf[_chainOf[parent]] case final trajectory?) {
+          _trajectoryOf[entry] = trajectory;
+        }
       }
     }
   }
 
-  /// Why [header], sent by [uid], breaks a path's ownership; null when it
+  /// Why [header], sent by [uid], breaks a trajectory's ownership; null when it
   /// does not. Called after the tip check, so a previous entry is a tip.
   String? _ownership(int uid, _Header header, Uint8List request) {
     final body = _bodyOf(request);
     final kind = header.kind;
-    String? owned(_Path? path) => switch (path) {
+    String? owned(_Trajectory? trajectory) => switch (trajectory) {
       null => null,
-      _ when _endedJourneys.contains(path.journey) =>
-        'journey-ended ${path.journey.hex}',
-      _ when path.loopUser != uid => 'not-owner',
+      _ when _endedMissions.contains(trajectory.mission) =>
+        'mission-ended ${trajectory.mission.hex}',
+      _ when trajectory.loopUser != uid => 'not-owner',
       _ => null,
     };
 
-    if (kind == Kind.journeyEnded && _JourneyId.journeyEndedIn(body) == null) {
-      return 'journey-ended-body';
+    if (kind == Kind.missionEnded && _MissionId.missionEndedIn(body) == null) {
+      return 'mission-ended-body';
     }
     if (header.previous case final previous?) {
-      if (kind == Kind.usersAssignedToJourneyPath) {
+      if (kind == Kind.usersAssignedToTrajectory) {
         return 'users-assigned-not-root';
       }
-      return owned(_pathOf[_chainOf[previous]]);
+      return owned(_trajectoryOf[_chainOf[previous]]);
     }
-    if (kind == Kind.usersAssignedToJourneyPath) {
+    if (kind == Kind.usersAssignedToTrajectory) {
       return _refuseUsersAssigned(body);
     }
     if (!_attaching.contains(kind)) return null;
@@ -406,26 +413,28 @@ final class JournalService {
     if (parent == null) return 'no-parent';
     final start = _chainOf[parent];
     if (start == null) return 'unknown ${parent.hex}';
-    final path = _pathOf[start];
-    return path == null ? 'parent-unowned' : owned(path);
+    final trajectory = _trajectoryOf[start];
+    return trajectory == null ? 'parent-unowned' : owned(trajectory);
   }
 
-  /// Why a `users-assigned-to-journey-path` with [body] cannot root a path's
-  /// chain: its body is not one, its path was assigned before, a user it
-  /// names is not one, or an open path holds either user. A path's two users
-  /// are never the same user, and no user is in use by two open paths, as
-  /// either.
+  /// Why a `users-assigned-to-trajectory` with [body] cannot root a
+  /// trajectory's chain: its body is not one, its trajectory was assigned
+  /// before, a user it names is not one, or an open trajectory holds either
+  /// user. A trajectory's two users are never the same user, and no user is
+  /// in use by two open trajectories, as either.
   String? _refuseUsersAssigned(Uint8List body) {
     final a = _UsersAssigned.parse(body);
     if (a == null) return 'users-assigned-body';
-    if (_paths.containsKey(a.path)) return 'users-assigned-again ${a.path.hex}';
+    if (_trajectories.containsKey(a.trajectory)) {
+      return 'users-assigned-again ${a.trajectory.hex}';
+    }
     final loopUser = _uid(a.loopUser);
     if (loopUser == null) return 'no-user ${a.loopUser}';
     final suit = _uid(a.suit);
     if (suit == null) return 'no-user ${a.suit}';
     if (loopUser == suit) return 'in-use ${a.suit}';
-    for (final open in _paths.values) {
-      if (_endedJourneys.contains(open.journey)) continue;
+    for (final open in _trajectories.values) {
+      if (_endedMissions.contains(open.mission)) continue;
       final inUse = {open.loopUser, open.suit};
       if (inUse.contains(loopUser)) return 'in-use ${a.loopUser}';
       if (inUse.contains(suit)) return 'in-use ${a.suit}';
@@ -451,7 +460,7 @@ final class JournalService {
       ...utf8.encode('$kind\n${previous?.hex ?? '-'}\n'),
       ...rest,
     ]);
-    final entry = journal.addEntry(bytes);
+    final entry = logbook.addEntry(bytes);
     _added(entry, _Header(kind, previous), bytes);
     return entry;
   }
@@ -500,7 +509,7 @@ final class JournalService {
       return 'refused $why';
     }
     try {
-      final entry = journal.addEntry(request);
+      final entry = logbook.addEntry(request);
       _added(entry, header, request);
       return 'ok ${entry.hex}';
     } on FileSystemException catch (e) {
@@ -512,9 +521,9 @@ final class JournalService {
   }
 }
 
-extension on JournalService {
+extension on LogbookService {
   /// Reads one request line from a reader, then answers it. A reader only
-  /// ever reads: nothing it sends reaches [JournalService._answer].
+  /// ever reads: nothing it sends reaches [LogbookService._answer].
   void _serveReader(Socket socket) {
     final line = BytesBuilder();
     var answered = false;
@@ -540,7 +549,7 @@ extension on JournalService {
 
   /// `get <entry>`, `tip <entry>`, or `subscribe <kinds> from <entry>`:
   /// `<kinds>` is `*` or names joined by commas, and what comes after `from`
-  /// is an entry, or `start` for the journal's start.
+  /// is an entry, or `start` for the logbook's start.
   void _read(Socket socket, String request) {
     void refuse(String why) {
       socket.add(utf8.encode('refused $why\n'));
@@ -572,7 +581,7 @@ extension on JournalService {
         // the backlog and the live entries.
         for (final indexed in _order.skip(skip)) {
           if (!subscriber.wants(indexed.header.kind)) continue;
-          final bytes = journal.get(indexed.object);
+          final bytes = logbook.get(indexed.object);
           if (bytes != null) {
             _send(socket, indexed.entry, indexed.header, bytes);
           }
@@ -589,7 +598,7 @@ extension on JournalService {
   /// length, so the reader can check both names: that the entry hashes to
   /// [entry], and that the bytes hash to the object it names. An entry with
   /// no header has `-` for its kind, which no kind can be. Otherwise one
-  /// line: `none` when the journal holds no such entry, `unreadable` when
+  /// line: `none` when the logbook holds no such entry, `unreadable` when
   /// it does but its object is `missing` or `corrupt`, `failed` when the
   /// object could not be read.
   void _get(Socket socket, EntryHash entry) {
@@ -602,7 +611,7 @@ extension on JournalService {
     if (raw == null) return answer('none ${entry.hex}');
     final Uint8List? bytes;
     try {
-      bytes = journal.get(JournalEntry.parse(raw)!.object);
+      bytes = logbook.get(LogbookEntry.parse(raw)!.object);
     } on CorruptObject {
       return answer('unreadable ${entry.hex} corrupt');
     } on FileSystemException catch (e) {
@@ -663,7 +672,7 @@ final class _Subscriber {
   bool wants(Kind kind) => kinds?.contains(kind.name) ?? true;
 }
 
-/// Where a subscription starts: the journal's start, or just after an entry.
+/// Where a subscription starts: the logbook's start, or just after an entry.
 sealed class _SubscribeFrom {
   const _SubscribeFrom();
 
@@ -686,31 +695,31 @@ final class _FromAfter extends _SubscribeFrom {
   final EntryHash entry;
 }
 
-/// The id of a journey path, which only one
-/// `users-assigned-to-journey-path` ever names.
-final class _PathId extends Sha256Name {
-  _PathId._(super.digest);
+/// The id of a trajectory, which only one
+/// `users-assigned-to-trajectory` ever names.
+final class _TrajectoryId extends Sha256Name {
+  _TrajectoryId._(super.digest);
 
-  static _PathId? parse(String s) => switch (Sha256Name.digestOfHex(s)) {
-    final d? => _PathId._(d),
+  static _TrajectoryId? parse(String s) => switch (Sha256Name.digestOfHex(s)) {
+    final d? => _TrajectoryId._(d),
     null => null,
   };
 }
 
-/// The id of a journey, which a `journey-ended` closes.
-final class _JourneyId extends Sha256Name {
-  _JourneyId._(super.digest);
+/// The id of a mission, which a `mission-ended` closes.
+final class _MissionId extends Sha256Name {
+  _MissionId._(super.digest);
 
-  static _JourneyId? parse(String s) => switch (Sha256Name.digestOfHex(s)) {
-    final d? => _JourneyId._(d),
+  static _MissionId? parse(String s) => switch (Sha256Name.digestOfHex(s)) {
+    final d? => _MissionId._(d),
     null => null,
   };
 
-  /// The journey a `journey-ended` entry's [body] names: a JSON object whose
-  /// `journey` is a journey id. The rest of the body is the docking
+  /// The mission a `mission-ended` entry's [body] names: a JSON object whose
+  /// `mission` is a mission id. The rest of the body is the docking
   /// station's to read. Null when it names none.
-  static _JourneyId? journeyEndedIn(Uint8List body) => switch (_json(body)) {
-    {'journey': final String journey} => parse(journey),
+  static _MissionId? missionEndedIn(Uint8List body) => switch (_json(body)) {
+    {'mission': final String mission} => parse(mission),
     _ => null,
   };
 }
@@ -724,26 +733,26 @@ Object? _json(Uint8List body) {
   }
 }
 
-/// A journey path as its `users-assigned-to-journey-path` entry handed it
-/// out: its journey, the one user who may extend its chains, and the user
+/// A trajectory as its `users-assigned-to-trajectory` entry handed it
+/// out: its mission, the one user who may extend its chains, and the user
 /// that wears its suit. A user that could not be found is null, and matches
 /// no sender.
-final class _Path {
-  _Path(this.journey, this.loopUser, this.suit);
+final class _Trajectory {
+  _Trajectory(this.mission, this.loopUser, this.suit);
 
-  final _JourneyId journey;
+  final _MissionId mission;
   final int? loopUser;
   final int? suit;
 }
 
-/// A `users-assigned-to-journey-path` entry's body, read strictly: exactly
-/// `{"journeyPath","journey","loopUser","suit"}`, the ids in lower-case
+/// A `users-assigned-to-trajectory` entry's body, read strictly: exactly
+/// `{"trajectory","mission","loopUser","suit"}`, the ids in lower-case
 /// hex and the users as names or uids.
 final class _UsersAssigned {
-  _UsersAssigned(this.path, this.journey, this.loopUser, this.suit);
+  _UsersAssigned(this.trajectory, this.mission, this.loopUser, this.suit);
 
-  final _PathId path;
-  final _JourneyId journey;
+  final _TrajectoryId trajectory;
+  final _MissionId mission;
   final String loopUser;
   final String suit;
 
@@ -754,16 +763,19 @@ final class _UsersAssigned {
     final json = _json(body);
     if (json
         case {
-          'journeyPath': final String path,
-          'journey': final String journey,
+          'trajectory': final String trajectory,
+          'mission': final String mission,
           'loopUser': final String loopUser,
           'suit': final String suit,
         }
         when json.length == 4 &&
             _user.hasMatch(loopUser) &&
             _user.hasMatch(suit)) {
-      return switch ((_PathId.parse(path), _JourneyId.parse(journey))) {
-        (final p?, final j?) => _UsersAssigned(p, j, loopUser, suit),
+      return switch ((
+        _TrajectoryId.parse(trajectory),
+        _MissionId.parse(mission),
+      )) {
+        (final t?, final m?) => _UsersAssigned(t, m, loopUser, suit),
         _ => null,
       };
     }

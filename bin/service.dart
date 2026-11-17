@@ -1,11 +1,11 @@
-/// Runs a journal's one writer (see `package:is_journal/service.dart`):
+/// Runs a logbook's one writer (see `package:is_logbook/service.dart`):
 ///
-///     JOURNAL_DIR=/var/lib/record JOURNAL_SOCKET=/run/record/journal.sock \
-///       JOURNAL_SENDERS=/etc/record/senders \
-///       JOURNAL_READ_SOCKET=/run/record-read/journal.sock \
-///       dart run is_journal:service
+///     LOGBOOK_DIR=/var/lib/record LOGBOOK_SOCKET=/run/record/logbook.sock \
+///       LOGBOOK_SENDERS=/etc/record/senders \
+///       LOGBOOK_READ_SOCKET=/run/record-read/logbook.sock \
+///       dart run is_logbook:service
 ///
-/// `JOURNAL_READ_SOCKET` is optional: without it, nothing can read through
+/// `LOGBOOK_READ_SOCKET` is optional: without it, nothing can read through
 /// the service.
 ///
 /// Exits 78 when it cannot start as configured, and closes cleanly on
@@ -15,35 +15,35 @@ library;
 import 'dart:async';
 import 'dart:io';
 
-import 'package:is_journal/is_journal.dart';
-import 'package:is_journal/service.dart';
+import 'package:is_logbook/is_logbook.dart';
+import 'package:is_logbook/service.dart';
 
 Future<void> main() async {
   final env = Platform.environment;
   final [dir, socket, senders] = [
-    for (final name in ['JOURNAL_DIR', 'JOURNAL_SOCKET', 'JOURNAL_SENDERS'])
+    for (final name in ['LOGBOOK_DIR', 'LOGBOOK_SOCKET', 'LOGBOOK_SENDERS'])
       env[name] ?? _fail('$name is not set'),
   ];
-  final readSocket = env['JOURNAL_READ_SOCKET'];
+  final readSocket = env['LOGBOOK_READ_SOCKET'];
   final SenderTable table;
   try {
     table = SenderTable.parse(File(senders).readAsBytesSync());
   } on Exception catch (e) {
     _fail('$senders: $e');
   }
-  final journal =
-      Journal.open(Directory(dir)) ??
-      _fail('the journal cannot name its own code; see the README');
-  final JournalService service;
+  final logbook =
+      Logbook.open(Directory(dir)) ??
+      _fail('the logbook cannot name its own code; see the README');
+  final LogbookService service;
   try {
-    service = await JournalService.start(
-      journal,
+    service = await LogbookService.start(
+      logbook,
       table,
       File(socket),
       readSocket: readSocket == null ? null : File(readSocket),
     );
   } on Object catch (e) {
-    journal.close();
+    logbook.close();
     _fail('$e');
   }
   stdout.writeln(
@@ -62,6 +62,6 @@ Future<void> main() async {
 }
 
 Never _fail(String why) {
-  stderr.writeln('is_journal service: $why');
+  stderr.writeln('is_logbook service: $why');
   exit(78);
 }
