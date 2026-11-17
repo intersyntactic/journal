@@ -9,16 +9,22 @@
 ///     <kind>\n<previous>\n<the rest>
 ///
 /// `<kind>` is a name the sender table lists for the sender's user, and
-/// `<previous>` is the hash of the entry before this one in its chain, or
-/// `-` to start a chain. The sender closes its side when it has sent the request, and the
-/// service answers one line: `ok <entry hash>`, or `refused <why>`, which
-/// for an entry that is not its chain's tip names the tip, so the sender can
-/// read it and try again. What it refuses it does not add.
+/// `<previous>` is the id of the entry before this one in its chain, or
+/// `-` to start a chain. An entry's id is the sha256 of its bytes, header
+/// and all ([ObjectId]): a sender can compute it before sending, and every
+/// reader and every copy of the logbook computes the same one. The 96 bytes
+/// the logbook chains its entries with are its own check, and never an id
+/// here. The sender closes its side when it has sent the request, and the
+/// service answers one line: `ok <id>`, or `refused <why>`, which for an
+/// entry that is not its chain's tip names the tip, so the sender can read it
+/// and try again, and for bytes the logbook already holds is
+/// `refused duplicate <id>`. What it refuses it does not add.
 ///
 /// The service reads the sender's user from the socket, as the kernel
 /// reports it, never from the request. On every start it adds an entry of
 /// kind `started` holding the sender table in force, so the record shows
-/// who was allowed to write what. Which names exist is the table's to say,
+/// who was allowed to write what. Each `started` names the one before it as
+/// previous, so no two are the same bytes. Which names exist is the table's to say,
 /// and every kind means nothing to the service but two.
 ///
 /// A trajectory's chain is owned. An entry of kind
@@ -184,28 +190,33 @@ final class LogbookService {
   ServerSocket? _readServer;
 
   /// Each entry in a chain, mapped to the entry that starts its chain.
-  final _chainOf = <EntryHash, EntryHash>{};
+  final _chainOf = <ObjectId, ObjectId>{};
 
   /// Each chain's start, mapped to its tip.
-  final _tipOf = <EntryHash, EntryHash>{};
+  final _tipOf = <ObjectId, ObjectId>{};
 
   /// Every entry with a header, in the logbook's order, and where each is.
   final _order = <_Indexed>[];
-  final _at = <EntryHash, int>{};
+  final _at = <ObjectId, int>{};
 
-  /// Every entry in the logbook, as its 96 bytes, whether or not its object
-  /// can be read: an entry whose object is lost was still recorded.
-  final _entries = <EntryHash, Uint8List>{};
+  /// Every entry in the logbook, by id, as the 96 bytes that record it,
+  /// whether or not its bytes can be read: an entry whose bytes are lost was
+  /// still recorded.
+  final _entries = <ObjectId, Uint8List>{};
 
-  /// The logbook's last entry, which the next one names as the one before.
+  /// The logbook's last 96 bytes, which the next ones name as the ones
+  /// before.
   var _head = EntryHash.origin;
+
+  /// The last `started` entry, which the next one names as previous.
+  ObjectId? _lastStarted;
 
   /// Every trajectory ever assigned, by its id.
   final _trajectories = <_TrajectoryId, _Trajectory>{};
 
   /// Each chain the trajectory that owns it, by the chain's start: its
   /// `users-assigned-to-trajectory` root, or an attached root.
-  final _trajectoryOf = <EntryHash, _Trajectory>{};
+  final _trajectoryOf = <ObjectId, _Trajectory>{};
 
   /// The missions a `mission-ended` closed.
   final _endedMissions = <_MissionId>{};
@@ -241,9 +252,8 @@ final class LogbookService {
       service._readSocket = readSocket;
       service._readServer!.listen(service._serveReader);
     }
-    service
-      .._load()
-      .._append(Kind.started, null, senders.bytes);
+    service._load();
+    service._append(Kind.started, service._lastStarted, senders.bytes);
     service._server.listen(service._serve);
     return service;
   }
@@ -289,6 +299,7 @@ final class LogbookService {
     _at.clear();
     _entries.clear();
     _head = EntryHash.origin;
+    _lastStarted = null;
     _trajectories.clear();
     _trajectoryOf.clear();
     _endedMissions.clear();
@@ -299,19 +310,18 @@ final class LogbookService {
     final raw = entries.readAsBytesSync();
     for (var at = 0; at + LogbookEntry.length <= raw.length;) {
       final bytes = Uint8List.sublistView(raw, at, at += LogbookEntry.length);
-      final objectId = LogbookEntry.parse(bytes)!.object;
+      final entry = LogbookEntry.parse(bytes)!.object;
       _head = EntryHash.of(bytes);
-      _entries[_head] = bytes;
+      _entries[entry] = bytes;
       final Uint8List? object;
       try {
-        object = logbook.get(objectId);
+        object = logbook.get(entry);
       } on CorruptObject {
         continue;
       }
       final header = object == null ? null : _Header.parse(object);
       if (header == null) continue;
-      final entry = _head;
-      _index(entry, header, objectId);
+      _index(entry, header);
       final previous = header.previous;
       if (previous != null && !_isTip(previous)) continue;
       _link(entry, previous);
@@ -319,20 +329,20 @@ final class LogbookService {
     }
   }
 
-  void _index(EntryHash entry, _Header header, ObjectId object) {
+  void _index(ObjectId entry, _Header header) {
     _at[entry] = _order.length;
-    _order.add(_Indexed(entry, header, object));
+    _order.add(_Indexed(entry, header));
   }
 
-  /// Indexes and links [entry], just added, and sends it to the readers
-  /// subscribed to its kind.
-  void _added(EntryHash entry, _Header header, Uint8List bytes) {
-    final object = ObjectId.of(bytes);
-    final raw = LogbookEntry(_head, logbook.codeHash, object).encode();
-    if (EntryHash.of(raw) == entry) {
+  /// Indexes and links [bytes], just added as the 96 bytes [link], and sends
+  /// them to the readers subscribed to their kind.
+  void _added(EntryHash link, _Header header, Uint8List bytes) {
+    final entry = ObjectId.of(bytes);
+    final raw = LogbookEntry(_head, logbook.codeHash, entry).encode();
+    if (EntryHash.of(raw) == link) {
       _entries[entry] = raw;
-      _head = entry;
-      _index(entry, header, object);
+      _head = link;
+      _index(entry, header);
       _link(entry, header.previous);
       _own(entry, header, bytes);
     } else {
@@ -353,11 +363,12 @@ final class LogbookService {
   /// entry added now and one read back, so a restart refuses what the live
   /// service did. Whatever it cannot read was refused when it was sent, and
   /// owns nothing.
-  void _own(EntryHash entry, _Header header, Uint8List bytes) {
+  void _own(ObjectId entry, _Header header, Uint8List bytes) {
     final body = _bodyOf(bytes);
     final kind = header.kind;
     if (kind == Kind.started) {
       _attaching = SenderTable.attachingIn(body);
+      _lastStarted = entry;
     } else if (kind == Kind.missionEnded) {
       if (_MissionId.missionEndedIn(body) case final mission?) {
         _endedMissions.add(mission);
@@ -444,25 +455,23 @@ final class LogbookService {
 
   int? _uid(String user) => _uids.putIfAbsent(user, () => _uidOf(user));
 
-  bool _isTip(EntryHash entry) => switch (_chainOf[entry]) {
+  bool _isTip(ObjectId entry) => switch (_chainOf[entry]) {
     final start? => _tipOf[start] == entry,
     null => false,
   };
 
-  void _link(EntryHash entry, EntryHash? previous) {
+  void _link(ObjectId entry, ObjectId? previous) {
     final start = previous == null ? entry : _chainOf[previous]!;
     _chainOf[entry] = start;
     _tipOf[start] = entry;
   }
 
-  EntryHash _append(Kind kind, EntryHash? previous, Uint8List rest) {
+  void _append(Kind kind, ObjectId? previous, Uint8List rest) {
     final bytes = Uint8List.fromList([
       ...utf8.encode('$kind\n${previous?.hex ?? '-'}\n'),
       ...rest,
     ]);
-    final entry = logbook.addEntry(bytes);
-    _added(entry, _Header(kind, previous), bytes);
-    return entry;
+    _added(logbook.addEntry(bytes), _Header(kind, previous), bytes);
   }
 
   Future<void> _serve(Socket socket) async {
@@ -497,6 +506,8 @@ final class LogbookService {
     if (uid == null || !_senders.allows(uid, header.kind)) {
       return 'refused kind $name for user ${uid ?? 'unknown'}';
     }
+    final entry = ObjectId.of(request);
+    if (_entries.containsKey(entry)) return 'refused duplicate ${entry.hex}';
     final previous = header.previous;
     if (previous != null) {
       final start = _chainOf[previous];
@@ -509,8 +520,7 @@ final class LogbookService {
       return 'refused $why';
     }
     try {
-      final entry = logbook.addEntry(request);
-      _added(entry, header, request);
+      _added(logbook.addEntry(request), header, request);
       return 'ok ${entry.hex}';
     } on FileSystemException catch (e) {
       // The entry may be in even though the add failed: read the chains
@@ -557,10 +567,10 @@ extension on LogbookService {
     }
 
     switch (request.split(' ')) {
-      case ['get', final hex] when EntryHash.parse(hex) != null:
-        _get(socket, EntryHash.parse(hex)!);
-      case ['tip', final hex] when EntryHash.parse(hex) != null:
-        final start = _chainOf[EntryHash.parse(hex)!];
+      case ['get', final hex] when ObjectId.parse(hex) != null:
+        _get(socket, ObjectId.parse(hex)!);
+      case ['tip', final hex] when ObjectId.parse(hex) != null:
+        final start = _chainOf[ObjectId.parse(hex)!];
         if (start == null) return refuse('unknown $hex');
         socket.add(utf8.encode('tip ${_tipOf[start]!.hex}\n'));
         socket.close();
@@ -581,7 +591,7 @@ extension on LogbookService {
         // the backlog and the live entries.
         for (final indexed in _order.skip(skip)) {
           if (!subscriber.wants(indexed.header.kind)) continue;
-          final bytes = logbook.get(indexed.object);
+          final bytes = logbook.get(indexed.entry);
           if (bytes != null) {
             _send(socket, indexed.entry, indexed.header, bytes);
           }
@@ -594,14 +604,15 @@ extension on LogbookService {
     }
   }
 
-  /// Sends [entry] as `subscribe` does, with its 96 bytes in hex after the
-  /// length, so the reader can check both names: that the entry hashes to
-  /// [entry], and that the bytes hash to the object it names. An entry with
+  /// Sends [entry] as `subscribe` does, with the 96 bytes that record it in
+  /// hex after the length. The bytes alone prove themselves: they hash to
+  /// [entry]. The 96 bytes name [entry] as their object, for a reader that
+  /// also checks the logbook's chain. An entry with
   /// no header has `-` for its kind, which no kind can be. Otherwise one
   /// line: `none` when the logbook holds no such entry, `unreadable` when
   /// it does but its object is `missing` or `corrupt`, `failed` when the
   /// object could not be read.
-  void _get(Socket socket, EntryHash entry) {
+  void _get(Socket socket, ObjectId entry) {
     void answer(String line) {
       socket.add(utf8.encode('$line\n'));
       socket.close();
@@ -611,7 +622,7 @@ extension on LogbookService {
     if (raw == null) return answer('none ${entry.hex}');
     final Uint8List? bytes;
     try {
-      bytes = logbook.get(LogbookEntry.parse(raw)!.object);
+      bytes = logbook.get(entry);
     } on CorruptObject {
       return answer('unreadable ${entry.hex} corrupt');
     } on FileSystemException catch (e) {
@@ -632,9 +643,9 @@ extension on LogbookService {
   }
 }
 
-/// Writes one entry to a reader: `entry <hash> <kind> <previous> <length>`,
+/// Writes one entry to a reader: `entry <id> <kind> <previous> <length>`,
 /// a newline, and its bytes exactly as recorded.
-void _send(Socket socket, EntryHash entry, _Header header, Uint8List bytes) {
+void _send(Socket socket, ObjectId entry, _Header header, Uint8List bytes) {
   socket
     ..add(
       utf8.encode(
@@ -645,13 +656,12 @@ void _send(Socket socket, EntryHash entry, _Header header, Uint8List bytes) {
     ..add(bytes);
 }
 
-/// An entry the service knows: its hash, its header, and its object.
+/// An entry the service knows: its id and its header.
 final class _Indexed {
-  _Indexed(this.entry, this.header, this.object);
+  _Indexed(this.entry, this.header);
 
-  final EntryHash entry;
+  final ObjectId entry;
   final _Header header;
-  final ObjectId object;
 }
 
 /// A reader subscribed to [kinds] (null for every kind) on [socket].
@@ -676,10 +686,10 @@ final class _Subscriber {
 sealed class _SubscribeFrom {
   const _SubscribeFrom();
 
-  /// `start`, or an entry's hash; null when [word] is neither.
+  /// `start`, or an entry's id; null when [word] is neither.
   static _SubscribeFrom? parse(String word) => word == 'start'
       ? const _FromStart()
-      : switch (EntryHash.parse(word)) {
+      : switch (ObjectId.parse(word)) {
           final entry? => _FromAfter(entry),
           null => null,
         };
@@ -692,7 +702,7 @@ final class _FromStart extends _SubscribeFrom {
 final class _FromAfter extends _SubscribeFrom {
   const _FromAfter(this.entry);
 
-  final EntryHash entry;
+  final ObjectId entry;
 }
 
 /// The id of a trajectory, which only one
@@ -789,12 +799,12 @@ Uint8List _bodyOf(Uint8List bytes) {
   return Uint8List.sublistView(bytes, bytes.indexOf(0x0a, first + 1) + 1);
 }
 
-/// The parent an attached root names on its body's first line: an entry
-/// hash and a newline. Null when it names none.
-EntryHash? _parentIn(Uint8List body) {
+/// The parent an attached root names on its body's first line: an entry's
+/// id and a newline. Null when it names none.
+ObjectId? _parentIn(Uint8List body) {
   final nl = body.indexOf(0x0a);
   if (nl < 0) return null;
-  return EntryHash.parse(
+  return ObjectId.parse(
     ascii.decode(Uint8List.sublistView(body, 0, nl), allowInvalid: true),
   );
 }
@@ -805,7 +815,7 @@ final class _Header {
   _Header(this.kind, this.previous);
 
   final Kind kind;
-  final EntryHash? previous;
+  final ObjectId? previous;
 
   static _Header? parse(Uint8List bytes) {
     final first = bytes.indexOf(0x0a);
@@ -820,7 +830,7 @@ final class _Header {
       bytes.sublist(first + 1, second),
       allowInvalid: true,
     );
-    final previous = previousText == '-' ? null : EntryHash.parse(previousText);
+    final previous = previousText == '-' ? null : ObjectId.parse(previousText);
     if (kind == null || (previousText != '-' && previous == null)) return null;
     return _Header(kind, previous);
   }

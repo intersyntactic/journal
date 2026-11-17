@@ -117,9 +117,35 @@ void main() {
 
   test('adds what a sender may write, exactly as sent', () async {
     final answer = await send(socket, 'turn\n-\nhello');
-    final head = (service.logbook.check() as Intact).head;
-    expect(answer, 'ok ${head.hex}');
+    // The id is the sha256 of the bytes sent, which the sender can compute.
+    expect(answer, 'ok ${ObjectId.of(bytesOf('turn\n-\nhello')).hex}');
     expect(object(2), 'turn\n-\nhello');
+  });
+
+  group('duplicates', () {
+    test('refuses bytes the logbook already holds, naming them', () async {
+      final a = (await send(socket, 'turn\n-\nsame')).substring(3);
+      expect(await send(socket, 'turn\n-\nsame'), 'refused duplicate $a');
+      expect((service.logbook.check() as Intact).count, 2);
+    });
+
+    test('a resend of an entry that got in is a duplicate, not a fork', () async {
+      final a = (await send(socket, 'turn\n-\na')).substring(3);
+      final b = (await send(socket, 'turn\n$a\nb')).substring(3);
+      await send(socket, 'turn\n$b\nc');
+      expect(await send(socket, 'turn\n$a\nb'), 'refused duplicate $b');
+    });
+
+    test('each start names the last, so a restart is never one', () async {
+      for (var i = 0; i < 2; i++) {
+        await service.close();
+        service = await start('$me turn witnessed\nroot decided\n');
+      }
+      final first = ObjectId.of(bytesOf(object(1))).hex;
+      final second = ObjectId.of(bytesOf(object(2))).hex;
+      expect(object(2), 'started\n$first\n$me turn witnessed\nroot decided\n');
+      expect(object(3), startsWith('started\n$second\n'));
+    });
   });
 
   test('refuses a kind its sender may not write, and adds nothing', () async {
@@ -179,7 +205,7 @@ void main() {
     });
 
     test('says it is caught up even when nothing came before', () async {
-      final head = (service.logbook.check() as Intact).head.hex;
+      final head = ObjectId.of(bytesOf(object(1))).hex;
       final reader = await Reader.open(readSocket, 'subscribe turn from start');
       expect(await reader.next(), 'caught-up $head');
       final a = ok(await send(socket, 'turn\n-\na'));
@@ -262,19 +288,9 @@ void main() {
   group('get', () {
     String ok(String answer) => answer.substring('ok '.length);
 
-    /// The file holding the object of entry [hash].
-    File objectOf(String hash) {
-      final raw = File('${dir.path}/entries').readAsBytesSync();
-      for (var at = 0; at < raw.length; at += 96) {
-        final entry = Uint8List.sublistView(raw, at, at + 96);
-        if (EntryHash.of(entry).hex != hash) continue;
-        final id = LogbookEntry.parse(entry)!.object.hex;
-        return File(
-          '${dir.path}/objects/${id.substring(0, 2)}/${id.substring(2)}',
-        );
-      }
-      throw StateError('no entry $hash');
-    }
+    /// The file holding the bytes of entry [id].
+    File objectOf(String id) =>
+        File('${dir.path}/objects/${id.substring(0, 2)}/${id.substring(2)}');
 
     /// Asks the read socket for entry [hash], keeping its own side open,
     /// and returns the first line and the bytes after it.
@@ -314,10 +330,9 @@ void main() {
           '${'turn\n$a\nb'.length}',
         ]);
         expect(utf8.decode(got.rest), 'turn\n$a\nb');
-        final entry = unhex(got.line[5]);
-        expect(EntryHash.of(entry).hex, b);
-        expect(LogbookEntry.parse(entry)!.object, ObjectId.of(got.rest));
-        expect(LogbookEntry.parse(entry)!.previous.hex, a);
+        // The bytes prove themselves; the 96 bytes name them as their object.
+        expect(ObjectId.of(got.rest).hex, b);
+        expect(LogbookEntry.parse(unhex(got.line[5]))!.object.hex, b);
       },
     );
 
@@ -350,7 +365,7 @@ void main() {
       () async {
         // Not through the service: it reads the logbook back to catch up.
         service.logbook.add(bytesOf('no header'));
-        final plain = (service.logbook.check() as Intact).head.hex;
+        final plain = ObjectId.of(bytesOf('no header')).hex;
         final a = ok(await send(socket, 'turn\n-\na'));
         final got = await get(plain);
         expect(got.line.sublist(0, 5), ['entry', plain, '-', '-', '9']);
@@ -393,7 +408,8 @@ void main() {
       final b = (await send(socket, 'turn\n$a\nb')).substring(3);
       await service.close();
       service = await start('$me turn\n');
-      expect(object(4), 'started\n-\n$me turn\n');
+      final first = ObjectId.of(bytesOf(object(1))).hex;
+      expect(object(4), 'started\n$first\n$me turn\n');
       expect(await send(socket, 'turn\n$a\nfork'), 'refused not-tip $b');
       expect(await send(socket, 'turn\n$b\nc'), startsWith('ok '));
     });

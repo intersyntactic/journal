@@ -134,9 +134,20 @@ processes send entries to over a Unix socket. A request is the bytes to
 record, starting with `<kind>\n<previous>\n`: a kind the sender's user may
 write, and the entry before this one in its chain, or `-` to start a chain.
 The service reads the user from the socket, refuses a kind the sender table
-doesn't give that user, and refuses an entry whose previous isn't its
-chain's tip, naming the tip. It answers `ok <entry hash>` or `refused <why>`. On every start it adds
-an entry holding the sender table in force.
+doesn't give that user, refuses bytes it already holds
+(`refused duplicate <id>`), and refuses an entry whose previous isn't its
+chain's tip, naming the tip. It answers `ok <id>` or `refused <why>`. On
+every start it adds a `started` entry holding the sender table in force,
+naming the last `started` as its previous.
+
+An entry's id is the sha256 of the bytes sent, header and all: the
+`ObjectId` of what it records. A sender can compute it before sending, and
+every reader and every copy of the logbook computes the same one. Since the
+bytes are the identity, two entries with the same kind, previous and body are
+one entry: a writer that means two makes the bytes differ. A resend of bytes
+that got in is answered `refused duplicate <id>`, which says they are in, so
+resending after a lost answer is safe. The 96 bytes that chain the logbook
+(above) are its own check, and never an id on the socket.
 
 `ok` means the entry and its bytes outlast the service crashing or being
 killed. It does not promise they outlast a power cut: the rename that puts the
@@ -184,13 +195,13 @@ nothing:
 
 A kind the table lists on an `attaching:` line starts a chain of its own
 that belongs to a trajectory, such as a reply sent in chunks beside the
-turns. Its first body line names its parent: an entry hash and a newline. It
+turns. Its first body line names its parent: an entry's id and a newline. It
 is refused unless the parent is on a chain a trajectory owns and the sender
 is that trajectory's loop user, and it closes with the trajectory's mission:
 
     attaching: reply-chunk
-    launcher users-assigned-to-trajectory
-    docking mission-ended
+    loop-launcher users-assigned-to-trajectory
+    docking-station mission-ended
 
 Who owns what is read back from the logbook on every start, so a restart
 refuses exactly what the service refused before it. Each attached chain is
@@ -204,22 +215,24 @@ it. A reader sends one line:
 - `subscribe <kinds> from <entry>`: every entry of those kinds (`*`, or
   names joined by commas) after `<entry>` (`start` for the logbook's start),
   then each new one as it is added, while the reader stays connected. Each
-  comes as `entry <hash> <kind> <previous> <length>`, a newline, and exactly
-  `<length>` bytes as recorded, which need not end in a newline. Between the
+  comes as `entry <id> <kind> <previous> <length>`, a newline, and exactly
+  `<length>` bytes as recorded, which need not end in a newline; their
+  sha256 is `<id>`, so a reader checks every one. Between the
   backlog and the first new entry comes one line, `caught-up <head>`: the
   logbook's last entry of any kind when the backlog ended, or `start`, which
   is also a place to subscribe from next time.
-- `tip <entry>`: answered `tip <hash>`, the tip of that entry's chain.
+- `tip <entry>`: answered `tip <id>`, the tip of that entry's chain.
 - `get <entry>`: that entry, as `subscribe` sends it, with one more word
-  after the length: the entry's 96 bytes in hex. Check both names: those 96
-  bytes hash to `<entry>`, and bytes 64–95 of them are the sha256 of the
-  bytes after it. An entry written without a header comes with `-` for
+  after the length: the 96 bytes that record it, in hex, whose bytes 64–95
+  are `<entry>`, for a reader that also checks the logbook's chain. The
+  bytes prove themselves: their sha256 is `<entry>`. An entry written
+  without a header comes with `-` for
   its kind and its previous. Otherwise one line: `none <entry>` when the logbook
   holds no such entry, `unreadable <entry> missing` or `corrupt` when it
   does but its bytes are gone or changed, or `failed <why>` when they could
   not be read.
 
-`<hash>` is the hash `ok` answered when the entry was written. A reader keeps
+`<id>` is the id `ok` answered when the entry was written. A reader keeps
 its side of the connection open until the answer has come: the service
 closes it after `tip` and `get`.
 
