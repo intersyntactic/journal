@@ -3,7 +3,7 @@ import 'dart:io';
 import 'dart:isolate';
 import 'dart:typed_data';
 
-import 'package:is_journal/is_journal.dart';
+import 'package:is_logbook/is_logbook.dart';
 import 'package:test/test.dart';
 
 Uint8List bytesOf(String s) => utf8.encode(s);
@@ -21,15 +21,15 @@ String readmeBlock(String marker) {
       .join('\n');
 }
 
-/// [Journal.open] of [path] from another isolate. Top-level, so the
+/// [Logbook.open] of [path] from another isolate. Top-level, so the
 /// closure sent to it carries [path] and nothing of a test's state.
-Future<Journal?> openInAnotherIsolate(String path) =>
-    Isolate.run(() => Journal.open(Directory(path)));
+Future<Logbook?> openInAnotherIsolate(String path) =>
+    Isolate.run(() => Logbook.open(Directory(path)));
 
-/// [journal]'s code hash, read in another isolate. Top-level, so the
-/// closure sent to it carries [journal] and nothing of a test's state.
-Future<FileSetId> codeHashInAnotherIsolate(Journal journal) =>
-    Isolate.run(() => journal.codeHash);
+/// [logbook]'s code hash, read in another isolate. Top-level, so the
+/// closure sent to it carries [logbook] and nothing of a test's state.
+Future<FileSetId> codeHashInAnotherIsolate(Logbook logbook) =>
+    Isolate.run(() => logbook.codeHash);
 
 /// Reads [path] over and over, as anything else in a process might.
 void readForever(String path) {
@@ -50,7 +50,7 @@ String bash(String script, Directory dir) {
 
 void main() {
   late Directory dir;
-  late Journal journal;
+  late Logbook logbook;
   File entries() => File('${dir.path}/entries');
   Uint8List entriesBytes() => entries().readAsBytesSync();
   File object(ObjectId id) => File(
@@ -58,16 +58,16 @@ void main() {
   );
   void addAll(String prefix, int n) {
     for (var i = 0; i < n; i++) {
-      journal.add(bytesOf('$prefix $i'));
+      logbook.add(bytesOf('$prefix $i'));
     }
   }
 
   setUp(() {
-    dir = Directory.systemTemp.createTempSync('journal_test');
-    journal = Journal.open(dir)!;
+    dir = Directory.systemTemp.createTempSync('logbook_test');
+    logbook = Logbook.open(dir)!;
   });
   tearDown(() {
-    journal.close();
+    logbook.close();
     dir.deleteSync(recursive: true);
   });
 
@@ -83,15 +83,15 @@ void main() {
       },
     );
 
-    test("the journal's origin is the sha256 of its format's name", () {
-      final printed = bash("printf 'is_journal/1' | shasum -a 256", dir);
+    test("the logbook's origin is the sha256 of its format's name", () {
+      final printed = bash("printf 'is_logbook/1' | shasum -a 256", dir);
       expect(EntryHash.origin.hex, printed.substring(0, 64));
     });
   });
 
   test("the code hash is what the README's command prints", () {
     final printed = bash(readmeBlock('`dart pub get`:'), Directory.current);
-    expect(Journal.ownHash()!.hex, printed.substring(0, 64));
+    expect(Logbook.ownHash()!.hex, printed.substring(0, 64));
   });
 
   test("the code hash covers is_content_id's code, not only this one's", () {
@@ -100,7 +100,7 @@ void main() {
       'xargs -0 shasum -a 256 | shasum -a 256',
       Directory.current,
     );
-    expect(Journal.ownHash()!.hex, isNot(ownOnly.substring(0, 64)));
+    expect(Logbook.ownHash()!.hex, isNot(ownOnly.substring(0, 64)));
   });
 
   group('a compiled build', () {
@@ -125,20 +125,20 @@ void main() {
     }
 
     setUpAll(() {
-      build = Directory.systemTemp.createTempSync('journal_build');
-      final r = Process.runSync('dart', ['run', 'is_journal:code_hash']);
+      build = Directory.systemTemp.createTempSync('logbook_build');
+      final r = Process.runSync('dart', ['run', 'is_logbook:code_hash']);
       expect(r.exitCode, 0, reason: r.stderr as String);
       define = (r.stdout as String).trim();
     });
     tearDownAll(() => build.deleteSync(recursive: true));
 
     test('code_hash prints the code hash as a define', () {
-      expect(define, '-Dis_journal.code=${Journal.ownHash()!.hex}');
+      expect(define, '-Dis_logbook.code=${Logbook.ownHash()!.hex}');
     });
 
     test('given the define, opens and names this code', () {
-      expect(runCompiled([define], 'with'), Journal.ownHash()!.hex);
-      expect(journal.check(), isA<Intact>());
+      expect(runCompiled([define], 'with'), Logbook.ownHash()!.hex);
+      expect(logbook.check(), isA<Intact>());
     }, timeout: const Timeout(Duration(minutes: 2)));
 
     test('without it, does not open', () {
@@ -147,7 +147,7 @@ void main() {
 
     test('from source, refuses a define that is not this code', () {
       final other = ObjectId.of(bytesOf('other code')).hex;
-      for (final wrong in ['-Dis_journal.code=$other', '-Dis_journal.code=x']) {
+      for (final wrong in ['-Dis_logbook.code=$other', '-Dis_logbook.code=x']) {
         final r = Process.runSync('dart', [
           'run',
           wrong,
@@ -155,46 +155,46 @@ void main() {
           dir.path,
         ]);
         expect(r.exitCode, isNot(0), reason: wrong);
-        expect(r.stderr, contains('is_journal:code_hash'), reason: wrong);
+        expect(r.stderr, contains('is_logbook:code_hash'), reason: wrong);
       }
     }, timeout: const Timeout(Duration(minutes: 1)));
   });
 
   group('objects', () {
     test('come back as they went in; added twice, one object, two entries', () {
-      final id = journal.add(bytesOf('hello'));
-      expect(journal.get(id), bytesOf('hello'));
-      expect(journal.add(bytesOf('hello')), id);
-      expect(entriesBytes().length, 2 * JournalEntry.length);
+      final id = logbook.add(bytesOf('hello'));
+      expect(logbook.get(id), bytesOf('hello'));
+      expect(logbook.add(bytesOf('hello')), id);
+      expect(entriesBytes().length, 2 * LogbookEntry.length);
       final objects = Directory('${dir.path}/objects')
           .listSync(recursive: true);
       expect(objects.whereType<File>().length, 1);
     });
 
     test('that no longer hash to their name throw, until added again', () {
-      final id = journal.add(bytesOf('hello'));
+      final id = logbook.add(bytesOf('hello'));
       object(id).writeAsStringSync('edited');
-      expect(() => journal.get(id), throwsA(isA<CorruptObject>()));
-      journal.add(bytesOf('hello'));
-      expect(journal.get(id), bytesOf('hello'));
+      expect(() => logbook.get(id), throwsA(isA<CorruptObject>()));
+      logbook.add(bytesOf('hello'));
+      expect(logbook.get(id), bytesOf('hello'));
     });
   });
 
   group('one writer', () {
     test('a second open in this process throws until the first closes', () {
-      expect(() => Journal.open(dir), throwsStateError);
-      journal.close();
-      Journal.open(dir)!
+      expect(() => Logbook.open(dir), throwsStateError);
+      logbook.close();
+      Logbook.open(dir)!
         ..add(bytesOf('after'))
         ..close();
-      expect(journal.check(), isA<Intact>());
+      expect(logbook.check(), isA<Intact>());
     });
 
     test('a folder it cannot write fails as itself, not as already open', () {
       final locked = Directory('${dir.path}/locked')..createSync();
       Process.runSync('chmod', ['555', locked.path]);
       addTearDown(() => Process.runSync('chmod', ['755', locked.path]));
-      expect(() => Journal.open(locked), throwsA(isA<PathAccessException>()));
+      expect(() => Logbook.open(locked), throwsA(isA<PathAccessException>()));
     });
 
     test('another isolate in this process cannot open it', () async {
@@ -202,7 +202,7 @@ void main() {
     });
 
     test('cannot be sent to another isolate, which would copy it', () async {
-      await expectLater(codeHashInAnotherIsolate(journal), throwsArgumentError);
+      await expectLater(codeHashInAnotherIsolate(logbook), throwsArgumentError);
     });
 
     test('keeps its folder when the working directory moves', () {
@@ -210,7 +210,7 @@ void main() {
       addTearDown(() => Directory.current = home);
       final elsewhere = Directory('${dir.path}/elsewhere')..createSync();
       Directory.current = dir;
-      final moved = Journal.open(Directory('moved'))!;
+      final moved = Logbook.open(Directory('moved'))!;
       Directory.current = elsewhere;
       moved
         ..add(bytesOf('after the move'))
@@ -235,7 +235,7 @@ void main() {
       addAll('this', n);
       expect(await other.exitCode, 0, reason: await errors);
       reader.kill(priority: Isolate.immediate);
-      final check = journal.check();
+      final check = logbook.check();
       expect(
         check,
         isA<Intact>(),
@@ -256,73 +256,73 @@ void main() {
       await other.stdout.transform(utf8.decoder).first;
       final claim = File('${dir.path}/writer.${other.pid}');
       expect(claim.existsSync(), isTrue);
-      journal.close();
-      journal = Journal.open(dir)!;
+      logbook.close();
+      logbook = Logbook.open(dir)!;
       expect(claim.existsSync(), isTrue, reason: 'it is still open there');
       other.kill(ProcessSignal.sigkill);
       await other.exitCode;
       expect(claim.existsSync(), isTrue, reason: 'a kill leaves it');
-      journal.close();
-      journal = Journal.open(dir)!;
+      logbook.close();
+      logbook = Logbook.open(dir)!;
       expect(claim.existsSync(), isFalse);
     });
 
     test('removes a claim no process holds', () {
       final left = File('${dir.path}/writer.4000000')..createSync();
       final other = File('${dir.path}/writer.4000000.keep')..createSync();
-      journal.close();
-      journal = Journal.open(dir)!;
+      logbook.close();
+      logbook = Logbook.open(dir)!;
       expect(left.existsSync(), isFalse);
       expect(other.existsSync(), isTrue, reason: 'not a claim');
     });
 
     test('closes when its claim is already gone', () {
       File('${dir.path}/writer.$pid').deleteSync();
-      journal.close();
-      expect(() => journal.add(bytesOf('late')), throwsStateError);
+      logbook.close();
+      expect(() => logbook.add(bytesOf('late')), throwsStateError);
     });
 
-    test('a closed journal writes nothing', () {
-      journal.close();
-      expect(() => journal.add(bytesOf('late')), throwsStateError);
+    test('a closed logbook writes nothing', () {
+      logbook.close();
+      expect(() => logbook.add(bytesOf('late')), throwsStateError);
       expect(entries().existsSync(), isFalse);
       expect(Directory('${dir.path}/objects').existsSync(), isFalse);
     });
   });
 
-  group('the journal', () {
+  group('the logbook', () {
     test('holds one 96-byte entry per call: before, code, object', () {
-      final id = journal.add(bytesOf('one'));
+      final id = logbook.add(bytesOf('one'));
       expect(entriesBytes().length, 96);
-      final entry = JournalEntry.parse(entriesBytes())!;
+      final entry = LogbookEntry.parse(entriesBytes())!;
       expect(entry.previous, EntryHash.origin);
-      expect(entry.code, journal.codeHash);
+      expect(entry.code, logbook.codeHash);
       expect(entry.object, id);
     });
 
     test('approved holds the first word of each line of approved', () {
-      expect(journal.approved(), isEmpty);
+      expect(logbook.approved(), isEmpty);
       final other = FileSetId.parse(ObjectId.of(bytesOf('another')).hex)!;
       File('${dir.path}/approved').writeAsStringSync(
-        '${journal.codeHash.hex}  -\n\n  ${other.hex} checked 5 Nov\nnot a hash\n',
+        '${logbook.codeHash.hex}  -\n\n  ${other.hex} checked 5 Nov\nnot a hash\n',
       );
-      expect(journal.approved(), {journal.codeHash, other});
+      expect(logbook.approved(), {logbook.codeHash, other});
     });
 
     test('approved reads past bytes that are not UTF-8', () {
       File('${dir.path}/approved').writeAsBytesSync([
-        ...utf8.encode('${journal.codeHash.hex}  checked by '),
+        ...utf8.encode('${logbook.codeHash.hex}  checked by '),
         0xff,
         0x0a,
       ]);
-      expect(journal.approved(), {journal.codeHash});
+      expect(logbook.approved(), {logbook.codeHash});
     });
 
     test('an approval writes nothing, and covers what was already written', () {
-      journal.add(bytesOf('same'));
+      logbook.add(bytesOf('same'));
       File('${dir.path}/approved')
-          .writeAsStringSync('${journal.codeHash.hex}  -\n');
-      journal.add(bytesOf('same'));
+          .writeAsStringSync('${logbook.codeHash.hex}  -\n');
+      logbook.add(bytesOf('same'));
       final bytes = entriesBytes();
       // Added before and after the approval, the two entries differ only in
       // the entry each names before it.
@@ -330,21 +330,21 @@ void main() {
         Uint8List.sublistView(bytes, 32, 96),
         Uint8List.sublistView(bytes, 96 + 32, 96 * 2),
       );
-      final first = JournalEntry.parse(Uint8List.sublistView(bytes, 0, 96))!;
-      expect(journal.approved(), contains(first.code));
+      final first = LogbookEntry.parse(Uint8List.sublistView(bytes, 0, 96))!;
+      expect(logbook.approved(), contains(first.code));
     });
 
-    test('is NoJournal before anything is written, Intact when empty', () {
-      expect(journal.check(), isA<NoJournal>());
+    test('is NoLogbook before anything is written, Intact when empty', () {
+      expect(logbook.check(), isA<NoLogbook>());
       entries().writeAsBytesSync(const []);
-      final check = journal.check() as Intact;
+      final check = logbook.check() as Intact;
       expect([check.count, check.head], [0, EntryHash.origin]);
     });
 
     test('is Intact with the last entry as its head', () {
       addAll('step', 5);
       final bytes = entriesBytes();
-      final check = journal.check() as Intact;
+      final check = logbook.check() as Intact;
       expect(check.count, 5);
       expect(
         check.head,
@@ -355,7 +355,7 @@ void main() {
     test('breaks at the entry after one that was changed', () {
       addAll('step', 5);
       entries().writeAsBytesSync(entriesBytes()..[96 * 2 + 70] ^= 1);
-      final check = journal.check() as Broken;
+      final check = logbook.check() as Broken;
       expect(
         [check.entries, check.torn, check.missing],
         [
@@ -369,12 +369,12 @@ void main() {
 
     test('names an entry whose object is gone, until its file is back', () {
       addAll('step', 3);
-      final gone = JournalEntry.parse(
+      final gone = LogbookEntry.parse(
         Uint8List.sublistView(entriesBytes(), 96, 96 * 2),
       )!.object;
       final copy = object(gone).readAsBytesSync();
       object(gone).deleteSync();
-      final check = journal.check() as Broken;
+      final check = logbook.check() as Broken;
       expect(
         [check.entries, check.torn, check.missing],
         [
@@ -384,10 +384,10 @@ void main() {
         ],
       );
 
-      // Copied in from another copy of the journal: no entry, since nothing
+      // Copied in from another copy of the logbook: no entry, since nothing
       // was added.
       object(gone).writeAsBytesSync(copy);
-      expect((journal.check() as Intact).count, 3);
+      expect((logbook.check() as Intact).count, 3);
     });
 
     test('takes the entry before the object, so a failed object is named', () {
@@ -397,14 +397,14 @@ void main() {
       // A distinct exception, so the caller knows the entry is in and adding
       // again would record it twice; still a FileSystemException.
       expect(
-        () => journal.add(bytesOf('cannot be kept')),
+        () => logbook.add(bytesOf('cannot be kept')),
         throwsA(
           isA<ObjectNotKept>()
               .having((e) => e.id, 'id', ObjectId.of(bytesOf('cannot be kept')))
               .having((e) => e, 'itself', isA<FileSystemException>()),
         ),
       );
-      final check = journal.check() as Broken;
+      final check = logbook.check() as Broken;
       expect(
         [check.entries, check.missing],
         [
@@ -416,9 +416,9 @@ void main() {
 
     test('still chains with entries cut from the end; only the head tells', () {
       addAll('step', 5);
-      final head = (journal.check() as Intact).head;
+      final head = (logbook.check() as Intact).head;
       entries().writeAsBytesSync(entriesBytes().sublist(0, 96 * 3));
-      final check = journal.check() as Intact;
+      final check = logbook.check() as Intact;
       expect(check.count, 3);
       expect(check.head, isNot(head));
     });
@@ -426,7 +426,7 @@ void main() {
     test('reports a torn tail, and the next add cuts it off', () {
       addAll('before', 3);
       entries().writeAsBytesSync(entriesBytes().sublist(0, 96 * 2 + 50));
-      final check = journal.check() as Broken;
+      final check = logbook.check() as Broken;
       expect(
         [check.entries, check.torn, check.missing],
         [<int>[], 50, <int>[]],
@@ -435,7 +435,7 @@ void main() {
       // The torn entry's add never returned, and its object comes after it,
       // so cutting it loses nothing that was recorded.
       addAll('after', 3);
-      expect((journal.check() as Intact).count, 5);
+      expect((logbook.check() as Intact).count, 5);
       expect(entriesBytes().length, 96 * 5);
     });
 
@@ -444,11 +444,11 @@ void main() {
       addAll('step', 5);
       expect(
         bash(script, dir).trim(),
-        '5 entries, head ${(journal.check() as Intact).head.hex}',
+        '5 entries, head ${(logbook.check() as Intact).head.hex}',
       );
 
       entries().writeAsBytesSync(entriesBytes()..[96 + 70] ^= 1);
-      final check = journal.check() as Broken;
+      final check = logbook.check() as Broken;
       expect(bashFinds(script, dir), [check.entries, check.missing, 0]);
       expect(
         [check.entries, check.missing],
@@ -459,10 +459,10 @@ void main() {
       );
     });
 
-    test("the README's bash says when there is no journal, or no xxd", () {
+    test("the README's bash says when there is no logbook, or no xxd", () {
       final script = readmeBlock('directory, in bash:');
-      expect(journal.check(), isA<NoJournal>());
-      expect(bash(script, dir).trim(), 'no journal here');
+      expect(logbook.check(), isA<NoLogbook>());
+      expect(bash(script, dir).trim(), 'no logbook here');
       addAll('step', 1);
       final noTools = Directory('${dir.path}/no-tools')..createSync();
       expect(
@@ -475,13 +475,13 @@ void main() {
       final script = readmeBlock('directory, in bash:');
       addAll('before', 3);
       entries().writeAsBytesSync(entriesBytes().sublist(0, 96 * 2 + 50));
-      final check = journal.check() as Broken;
+      final check = logbook.check() as Broken;
       expect(bashFinds(script, dir), [check.entries, check.missing, 50]);
 
       addAll('after', 2);
       expect(
         bash(script, dir).trim(),
-        '4 entries, head ${(journal.check() as Intact).head.hex}',
+        '4 entries, head ${(logbook.check() as Intact).head.hex}',
       );
     });
   });

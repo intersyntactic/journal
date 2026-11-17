@@ -1,4 +1,4 @@
-/// A journal's one writer, which other processes send entries to over a Unix
+/// A logbook's one writer, which other processes send entries to over a Unix
 /// socket. It checks two things before it adds anything: that the sender's
 /// user may write the entry's kind, and that the entry names the tip of its
 /// chain as previous.
@@ -29,7 +29,7 @@
 /// its mission. A kind the table lists as attaching starts a chain that
 /// names its parent entry on its first body line, and belongs to that
 /// entry's trajectory. Every other chain takes an entry from any user the
-/// table lets send its kind. Who owns what is read back from the journal on
+/// table lets send its kind. Who owns what is read back from the logbook on
 /// every start, so a restart refuses exactly what the live service did.
 library;
 
@@ -37,7 +37,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'is_journal.dart';
+import 'is_logbook.dart';
 
 /// The kind of an entry: a name of letters, digits, `.`, `_` and `-`. Not
 /// `-`, which reads as "no previous entry", and not [started], which only the
@@ -51,12 +51,12 @@ final class Kind {
   static final started = Kind._('started');
 
   /// The kind that roots a trajectory's chain and names the one user who
-  /// may extend it (see [JournalService]).
+  /// may extend it (see [LogbookService]).
   static final usersAssignedToTrajectory = Kind._(
     'users-assigned-to-trajectory',
   );
 
-  /// The kind that closes every chain of a mission (see [JournalService]).
+  /// The kind that closes every chain of a mission (see [LogbookService]).
   static final missionEnded = Kind._('mission-ended');
 
   static final _name = RegExp(r'^[A-Za-z0-9._-]+$');
@@ -81,7 +81,7 @@ final class Kind {
 ///
 /// A line `attaching: <kinds>` names the kinds that attach: a chain started
 /// by one of them names its parent entry on its first body line and joins
-/// that entry's trajectory (see [JournalService]). No user name holds a
+/// that entry's trajectory (see [LogbookService]). No user name holds a
 /// `:`, so the line cannot be read as a user's.
 final class SenderTable {
   SenderTable._(this.bytes, this._kinds, this.attaching);
@@ -169,14 +169,14 @@ int? _uidOf(String user) {
   return r.exitCode == 0 ? int.tryParse(r.stdout.toString().trim()) : null;
 }
 
-/// The writer of [journal], listening on [socket].
-final class JournalService {
-  JournalService._(this.journal, this._senders, this._socket, this._server);
+/// The writer of [logbook], listening on [socket].
+final class LogbookService {
+  LogbookService._(this.logbook, this._senders, this._socket, this._server);
 
   /// The largest request it reads, in bytes.
   static const maxRequest = 64 << 20;
 
-  final Journal journal;
+  final Logbook logbook;
   final SenderTable _senders;
   final File _socket;
   final ServerSocket _server;
@@ -189,15 +189,15 @@ final class JournalService {
   /// Each chain's start, mapped to its tip.
   final _tipOf = <EntryHash, EntryHash>{};
 
-  /// Every entry with a header, in the journal's order, and where each is.
+  /// Every entry with a header, in the logbook's order, and where each is.
   final _order = <_Indexed>[];
   final _at = <EntryHash, int>{};
 
-  /// Every entry in the journal, as its 96 bytes, whether or not its object
+  /// Every entry in the logbook, as its 96 bytes, whether or not its object
   /// can be read: an entry whose object is lost was still recorded.
   final _entries = <EntryHash, Uint8List>{};
 
-  /// The journal's last entry, which the next one names as the one before.
+  /// The logbook's last entry, which the next one names as the one before.
   var _head = EntryHash.origin;
 
   /// Every trajectory ever assigned, by its id.
@@ -219,19 +219,19 @@ final class JournalService {
   /// The readers subscribed to entries as they are added.
   final _subscribers = <_Subscriber>{};
 
-  /// Starts writing [journal] for the senders in [senders], listening on
+  /// Starts writing [logbook] for the senders in [senders], listening on
   /// [socket], and for readers on [readSocket] when it is given. Reads the
-  /// chains back from the journal, then adds the `started` entry. Throws a
+  /// chains back from the logbook, then adds the `started` entry. Throws a
   /// [StateError] when another service is listening on either socket; a
   /// socket file nothing listens on is replaced.
-  static Future<JournalService> start(
-    Journal journal,
+  static Future<LogbookService> start(
+    Logbook logbook,
     SenderTable senders,
     File socket, {
     File? readSocket,
   }) async {
-    final service = JournalService._(
-      journal,
+    final service = LogbookService._(
+      logbook,
       senders,
       socket,
       await _bind(socket),
@@ -265,7 +265,7 @@ final class JournalService {
   }
 
   /// Stops listening, ends its subscribers, removes the sockets
-  /// and closes the journal.
+  /// and closes the logbook.
   Future<void> close() async {
     await _server.close();
     await _readServer?.close();
@@ -276,7 +276,7 @@ final class JournalService {
     for (final socket in [_socket, ?_readSocket]) {
       if (socket.existsSync()) socket.deleteSync();
     }
-    journal.close();
+    logbook.close();
   }
 
   /// Reads the entries back, and the chains from their headers. An entry
@@ -294,17 +294,17 @@ final class JournalService {
     _endedMissions.clear();
     _attaching = {};
     _uids.clear();
-    final entries = File('${journal.dir.path}/entries');
+    final entries = File('${logbook.dir.path}/entries');
     if (!entries.existsSync()) return;
     final raw = entries.readAsBytesSync();
-    for (var at = 0; at + JournalEntry.length <= raw.length;) {
-      final bytes = Uint8List.sublistView(raw, at, at += JournalEntry.length);
-      final objectId = JournalEntry.parse(bytes)!.object;
+    for (var at = 0; at + LogbookEntry.length <= raw.length;) {
+      final bytes = Uint8List.sublistView(raw, at, at += LogbookEntry.length);
+      final objectId = LogbookEntry.parse(bytes)!.object;
       _head = EntryHash.of(bytes);
       _entries[_head] = bytes;
       final Uint8List? object;
       try {
-        object = journal.get(objectId);
+        object = logbook.get(objectId);
       } on CorruptObject {
         continue;
       }
@@ -328,7 +328,7 @@ final class JournalService {
   /// subscribed to its kind.
   void _added(EntryHash entry, _Header header, Uint8List bytes) {
     final object = ObjectId.of(bytes);
-    final raw = JournalEntry(_head, journal.codeHash, object).encode();
+    final raw = LogbookEntry(_head, logbook.codeHash, object).encode();
     if (EntryHash.of(raw) == entry) {
       _entries[entry] = raw;
       _head = entry;
@@ -336,7 +336,7 @@ final class JournalService {
       _link(entry, header.previous);
       _own(entry, header, bytes);
     } else {
-      // Something else wrote to the journal since: read it all back.
+      // Something else wrote to the logbook since: read it all back.
       _load();
     }
     for (final subscriber in _subscribers) {
@@ -460,7 +460,7 @@ final class JournalService {
       ...utf8.encode('$kind\n${previous?.hex ?? '-'}\n'),
       ...rest,
     ]);
-    final entry = journal.addEntry(bytes);
+    final entry = logbook.addEntry(bytes);
     _added(entry, _Header(kind, previous), bytes);
     return entry;
   }
@@ -509,7 +509,7 @@ final class JournalService {
       return 'refused $why';
     }
     try {
-      final entry = journal.addEntry(request);
+      final entry = logbook.addEntry(request);
       _added(entry, header, request);
       return 'ok ${entry.hex}';
     } on FileSystemException catch (e) {
@@ -521,9 +521,9 @@ final class JournalService {
   }
 }
 
-extension on JournalService {
+extension on LogbookService {
   /// Reads one request line from a reader, then answers it. A reader only
-  /// ever reads: nothing it sends reaches [JournalService._answer].
+  /// ever reads: nothing it sends reaches [LogbookService._answer].
   void _serveReader(Socket socket) {
     final line = BytesBuilder();
     var answered = false;
@@ -549,7 +549,7 @@ extension on JournalService {
 
   /// `get <entry>`, `tip <entry>`, or `subscribe <kinds> from <entry>`:
   /// `<kinds>` is `*` or names joined by commas, and what comes after `from`
-  /// is an entry, or `start` for the journal's start.
+  /// is an entry, or `start` for the logbook's start.
   void _read(Socket socket, String request) {
     void refuse(String why) {
       socket.add(utf8.encode('refused $why\n'));
@@ -581,7 +581,7 @@ extension on JournalService {
         // the backlog and the live entries.
         for (final indexed in _order.skip(skip)) {
           if (!subscriber.wants(indexed.header.kind)) continue;
-          final bytes = journal.get(indexed.object);
+          final bytes = logbook.get(indexed.object);
           if (bytes != null) {
             _send(socket, indexed.entry, indexed.header, bytes);
           }
@@ -598,7 +598,7 @@ extension on JournalService {
   /// length, so the reader can check both names: that the entry hashes to
   /// [entry], and that the bytes hash to the object it names. An entry with
   /// no header has `-` for its kind, which no kind can be. Otherwise one
-  /// line: `none` when the journal holds no such entry, `unreadable` when
+  /// line: `none` when the logbook holds no such entry, `unreadable` when
   /// it does but its object is `missing` or `corrupt`, `failed` when the
   /// object could not be read.
   void _get(Socket socket, EntryHash entry) {
@@ -611,7 +611,7 @@ extension on JournalService {
     if (raw == null) return answer('none ${entry.hex}');
     final Uint8List? bytes;
     try {
-      bytes = journal.get(JournalEntry.parse(raw)!.object);
+      bytes = logbook.get(LogbookEntry.parse(raw)!.object);
     } on CorruptObject {
       return answer('unreadable ${entry.hex} corrupt');
     } on FileSystemException catch (e) {
@@ -672,7 +672,7 @@ final class _Subscriber {
   bool wants(Kind kind) => kinds?.contains(kind.name) ?? true;
 }
 
-/// Where a subscription starts: the journal's start, or just after an entry.
+/// Where a subscription starts: the logbook's start, or just after an entry.
 sealed class _SubscribeFrom {
   const _SubscribeFrom();
 
