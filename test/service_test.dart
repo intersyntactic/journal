@@ -457,11 +457,25 @@ void main() {
       return answer;
     }
 
+    /// Closes [trajectory] as the docking station does, on its decisions
+    /// chain.
+    Future<String> close(String trajectory, {String? body}) async {
+      body ??=
+          '{"event":"${'e0' * 32}","by":"rules","trajectory":"$trajectory",'
+          '"mission":"$mission1","reading":{}}';
+      final answer = await send(
+        socket,
+        'trajectory-closed\n${decided ?? '-'}\n$body',
+      );
+      if (answer.startsWith('ok ')) decided = answer.substring('ok '.length);
+      return answer;
+    }
+
     setUp(() async {
       decided = null;
       await service.close();
       service = await start(
-        '$me users-assigned-to-trajectory mission-ended reply-chunk turn proposed\n$table',
+        '$me users-assigned-to-trajectory mission-ended trajectory-closed reply-chunk turn proposed\n$table',
       );
     });
 
@@ -697,6 +711,92 @@ void main() {
       );
     });
 
+    test(
+      'trajectory-closed closes its trajectory\'s chains, and frees its users',
+      () async {
+        final a = ok(
+          await send(socket, usersAssigned(trajectory1, mission1, me, '9001')),
+        );
+        final b = ok(
+          await send(
+            socket,
+            usersAssigned(trajectory2, mission1, '9002', '9003'),
+          ),
+        );
+        final t = ok(await send(socket, 'turn\n$a\nt'));
+        final r = ok(await send(socket, 'reply-chunk\n-\n$a\nchunk'));
+        ok(await close(trajectory1));
+        for (final late in [
+          'turn\n$t\nx',
+          'reply-chunk\n$r\nx',
+          'reply-chunk\n-\n$a\nx',
+        ]) {
+          expect(
+            await send(socket, late),
+            'refused trajectory-closed $trajectory1',
+            reason: late,
+          );
+        }
+        // Another trajectory of the same mission stays open.
+        expect(await send(socket, 'turn\n$b\nx'), 'refused not-owner');
+        // Closed twice changes nothing.
+        ok(await close(trajectory1));
+        // Its users are free again.
+        ok(
+          await send(
+            socket,
+            usersAssigned(trajectory3, mission2, '$myUid', '9001'),
+          ),
+        );
+      },
+    );
+
+    test(
+      'a trajectory closed before its users are assigned stays closed',
+      () async {
+        ok(await close(trajectory1));
+        expect(
+          await send(socket, usersAssigned(trajectory1, mission1, me, '9001')),
+          'refused trajectory-closed $trajectory1',
+        );
+        // Nothing was assigned, so the users were never held.
+        ok(
+          await send(socket, usersAssigned(trajectory2, mission1, me, '9001')),
+        );
+      },
+    );
+
+    test('no trajectory is assigned in an ended mission', () async {
+      ok(await end(mission1));
+      expect(
+        await send(socket, usersAssigned(trajectory1, mission1, me, '9001')),
+        'refused mission-ended $mission1',
+      );
+      ok(await send(socket, usersAssigned(trajectory1, mission2, me, '9001')));
+    });
+
+    test(
+      'reads the trajectory of trajectory-closed strictly, and only that',
+      () async {
+        for (final bad in [
+          '{}',
+          '{"trajectory":"${trajectory1.toUpperCase()}"}',
+          '{"trajectory":"a1"}',
+          '{"trajectory":1}',
+          '{"mission":"$mission1"}',
+          '["trajectory"]',
+          'not json',
+        ]) {
+          expect(
+            await close(trajectory1, body: bad),
+            'refused trajectory-closed-body',
+            reason: bad,
+          );
+        }
+        ok(await close(trajectory1, body: '{"trajectory":"$trajectory1"}'));
+      },
+    );
+
     group('an attached chain', () {
       test('names its parent, and its owner extends it', () async {
         final a = ok(
@@ -777,7 +877,7 @@ void main() {
       // Restarted with no attaching kinds: the attached chain was attached
       // under the table in force when it was added, and stays attached.
       service = await start(
-        '$me users-assigned-to-trajectory mission-ended reply-chunk turn proposed\n',
+        '$me users-assigned-to-trajectory mission-ended trajectory-closed reply-chunk turn proposed\n',
       );
       expect(await send(socket, 'turn\n$theirs\nx'), 'refused not-owner');
       expect(
@@ -794,7 +894,7 @@ void main() {
       ok(await end(mission1));
       await service.close();
       service = await start(
-        '$me users-assigned-to-trajectory mission-ended reply-chunk turn proposed\n',
+        '$me users-assigned-to-trajectory mission-ended trajectory-closed reply-chunk turn proposed\n',
       );
       expect(
         await send(socket, 'reply-chunk\n$r\nx'),
@@ -806,6 +906,31 @@ void main() {
       );
       // With no attaching kinds, a reply-chunk root is unowned again.
       expect(await send(socket, 'reply-chunk\n-\n$mine\nx'), startsWith('ok '));
+    });
+
+    test('a restart reads back which trajectories were closed', () async {
+      final mine = ok(
+        await send(socket, usersAssigned(trajectory1, mission1, me, '9001')),
+      );
+      ok(await close(trajectory1));
+      ok(await close(trajectory2));
+      await service.close();
+      service = await start(
+        '$me users-assigned-to-trajectory mission-ended trajectory-closed reply-chunk turn proposed\n$table',
+      );
+      expect(
+        await send(socket, 'turn\n$mine\nx'),
+        'refused trajectory-closed $trajectory1',
+      );
+      expect(
+        await send(
+          socket,
+          usersAssigned(trajectory2, mission1, '9002', '9003'),
+        ),
+        'refused trajectory-closed $trajectory2',
+      );
+      // trajectory1's users are free.
+      ok(await send(socket, usersAssigned(trajectory3, mission1, me, '9001')));
     });
   });
 
@@ -837,6 +962,7 @@ void main() {
         'attaching: tu/rn\n',
         'attaching: users-assigned-to-trajectory\n',
         'attaching: mission-ended\n',
+        'attaching: trajectory-closed\n',
         'attaching: started\n',
       ]) {
         expect(
