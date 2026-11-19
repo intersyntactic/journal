@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.2
+
+- **`trajectory-closed`** (`Kind.trajectoryClosed`) closes one trajectory,
+  as `mission-ended` closes a mission: its chain and every chain attached
+  to it are refused from then on (`refused trajectory-closed <trajectory>`),
+  and its users are free again. The service reads only the body's
+  `trajectory` (`refused trajectory-closed-body` when it names none). It
+  cannot attach. Closing twice changes nothing, and a restart reads it back.
+- A trajectory can be closed before its users are assigned: its
+  `users-assigned-to-trajectory` is then refused
+  (`refused trajectory-closed <trajectory>`).
+- **A `users-assigned-to-trajectory` for a mission already ended is
+  refused** (`refused mission-ended <mission>`). It used to be accepted, so a
+  loop could start in a closed mission and have every entry refused.
+- The code hash changes: `lib/service.dart` changed.
+
 ## 0.2.1
 
 - `LogbookService.start` takes `uidOf`, as `SenderTable.parse` does, with

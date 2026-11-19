@@ -170,7 +170,7 @@ The sender table has one line per user, then the kinds that user may send:
 ### Chains a trajectory owns
 
 Most chains take an entry from any user the table lets send its kind. A
-trajectory's chain is different: only one user may extend it. Two kinds
+trajectory's chain is different: only one user may extend it. Three kinds
 mean something to the service for this, and every other kind still means
 nothing:
 
@@ -181,9 +181,11 @@ nothing:
   entry on that chain is refused (`refused not-owner`) unless its sender is
   the `loopUser`. The service refuses a `users-assigned-to-trajectory` for
   a trajectory that was ever assigned before
-  (`users-assigned-again <trajectory>`), a user it cannot find (`no-user`),
-  and a user an open trajectory already holds, as either its loop user or
-  its suit (`in-use`). A trajectory's two users are never the same user.
+  (`users-assigned-again <trajectory>`), for a trajectory already closed
+  (`trajectory-closed <trajectory>`) or a mission already ended
+  (`mission-ended <mission>`), a user it cannot find (`no-user`), and a user
+  an open trajectory already holds, as either its loop user or its suit
+  (`in-use`). A trajectory's two users are never the same user.
 - `mission-ended` closes a mission: every chain whose
   `users-assigned-to-trajectory` names that mission, and every chain
   attached to one, refuses further entries
@@ -191,6 +193,14 @@ nothing:
   body is a JSON object whose `mission` is 64 lower-case hex; the service
   reads nothing else in it. It takes the tip check like any entry, so it can
   follow the decisions before it on one chain. Ending a mission twice
+  changes nothing.
+- `trajectory-closed` closes one trajectory as `mission-ended` closes a
+  mission: its chain and every chain attached to it refuse further entries
+  (`refused trajectory-closed <trajectory>`), and its users are free again.
+  Its body is a JSON object whose `trajectory` is 64 lower-case hex; the
+  service reads nothing else in it (`trajectory-closed-body` when it has
+  none). A trajectory can be closed before its users are assigned: its
+  `users-assigned-to-trajectory` is then refused. Closing a trajectory twice
   changes nothing.
 
 A kind the table lists on an `attaching:` line starts a chain of its own
@@ -201,7 +211,7 @@ is that trajectory's loop user, and it closes with the trajectory's mission:
 
     attaching: reply-chunk
     loop-launcher users-assigned-to-trajectory
-    docking-station mission-ended
+    docking-station mission-ended trajectory-closed
 
 Who owns what is read back from the logbook on every start, so a restart
 refuses exactly what the service refused before it. Each attached chain is

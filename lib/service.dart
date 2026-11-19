@@ -32,9 +32,10 @@
 /// may extend it, its loop user, and the user that wears its suit. No
 /// trajectory is assigned twice, and no user is in use by two open
 /// trajectories. An entry of kind [Kind.missionEnded] closes every chain of
-/// its mission. A kind the table lists as attaching starts a chain that
-/// names its parent entry on its first body line, and belongs to that
-/// entry's trajectory. Every other chain takes an entry from any user the
+/// its mission, and one of kind [Kind.trajectoryClosed] every chain of one
+/// trajectory, even one whose users are not assigned yet. A kind the table
+/// lists as attaching starts a chain that names its parent entry on its
+/// first body line, and belongs to that entry's trajectory. Every other chain takes an entry from any user the
 /// table lets send its kind. Who owns what is read back from the logbook on
 /// every start, so a restart refuses exactly what the live service did.
 library;
@@ -64,6 +65,17 @@ final class Kind {
 
   /// The kind that closes every chain of a mission (see [LogbookService]).
   static final missionEnded = Kind._('mission-ended');
+
+  /// The kind that closes every chain of one trajectory (see
+  /// [LogbookService]).
+  static final trajectoryClosed = Kind._('trajectory-closed');
+
+  /// The kinds the service reads a body of, which never attach.
+  static final _serviceReadsBody = {
+    usersAssignedToTrajectory,
+    missionEnded,
+    trajectoryClosed,
+  };
 
   static final _name = RegExp(r'^[A-Za-z0-9._-]+$');
 
@@ -103,7 +115,8 @@ final class SenderTable {
 
   /// [bytes] as a table. Throws a [FormatException] naming the line when a
   /// line has no kinds, a kind is not one [Kind.parse] takes, an attaching
-  /// kind is [Kind.usersAssignedToTrajectory] or [Kind.missionEnded], or a
+  /// kind is one whose body the service reads (such as
+  /// [Kind.missionEnded]), or a
   /// user is not one [uidOf] finds. [uidOf] defaults to a number as itself
   /// and a name as `id -u` prints it.
   static SenderTable parse(
@@ -122,9 +135,7 @@ final class SenderTable {
       if (words.first == _attachingLabel) {
         for (final word in words.skip(1)) {
           final kind = Kind.parse(word);
-          if (kind == null ||
-              kind == Kind.usersAssignedToTrajectory ||
-              kind == Kind.missionEnded) {
+          if (kind == null || Kind._serviceReadsBody.contains(kind)) {
             throw FormatException('line ${n + 1}: $word cannot attach');
           }
           attaching.add(kind);
@@ -158,8 +169,7 @@ final class SenderTable {
       ])
         for (final word in words)
           if (Kind.parse(word) case final kind?
-              when kind != Kind.usersAssignedToTrajectory &&
-                  kind != Kind.missionEnded)
+              when !Kind._serviceReadsBody.contains(kind))
             kind,
   };
 
@@ -227,6 +237,9 @@ final class LogbookService {
 
   /// The missions a `mission-ended` closed.
   final _endedMissions = <_MissionId>{};
+
+  /// The trajectories a `trajectory-closed` closed, whether or not their users were assigned.
+  final _closedTrajectories = <_TrajectoryId>{};
 
   /// The kinds that attach, as the last `started` entry's table says.
   var _attaching = <Kind>{};
@@ -313,6 +326,7 @@ final class LogbookService {
     _trajectories.clear();
     _trajectoryOf.clear();
     _endedMissions.clear();
+    _closedTrajectories.clear();
     _attaching = {};
     _uids.clear();
     final entries = File('${logbook.dir.path}/entries');
@@ -383,11 +397,16 @@ final class LogbookService {
       if (_MissionId.missionEndedIn(body) case final mission?) {
         _endedMissions.add(mission);
       }
+    } else if (kind == Kind.trajectoryClosed) {
+      if (_TrajectoryId.trajectoryClosedIn(body) case final trajectory?) {
+        _closedTrajectories.add(trajectory);
+      }
     } else if (header.previous != null) {
       return;
     } else if (kind == Kind.usersAssignedToTrajectory) {
       if (_UsersAssigned.parse(body) case final a?) {
         final trajectory = _Trajectory(
+          a.trajectory,
           a.mission,
           _uid(a.loopUser),
           _uid(a.suit),
@@ -413,12 +432,18 @@ final class LogbookService {
       null => null,
       _ when _endedMissions.contains(trajectory.mission) =>
         'mission-ended ${trajectory.mission.hex}',
+      _ when _closedTrajectories.contains(trajectory.id) =>
+        'trajectory-closed ${trajectory.id.hex}',
       _ when trajectory.loopUser != uid => 'not-owner',
       _ => null,
     };
 
     if (kind == Kind.missionEnded && _MissionId.missionEndedIn(body) == null) {
       return 'mission-ended-body';
+    }
+    if (kind == Kind.trajectoryClosed &&
+        _TrajectoryId.trajectoryClosedIn(body) == null) {
+      return 'trajectory-closed-body';
     }
     if (header.previous case final previous?) {
       if (kind == Kind.usersAssignedToTrajectory) {
@@ -440,14 +465,22 @@ final class LogbookService {
 
   /// Why a `users-assigned-to-trajectory` with [body] cannot root a
   /// trajectory's chain: its body is not one, its trajectory was assigned
-  /// before, a user it names is not one, or an open trajectory holds either
-  /// user. A trajectory's two users are never the same user, and no user is
-  /// in use by two open trajectories, as either.
+  /// before, it was closed or its mission ended, a user it names is not one, or an
+  /// open trajectory holds either user. A trajectory's two users are never
+  /// the same user, and no user is in use by two open trajectories, as
+  /// either.
   String? _refuseUsersAssigned(Uint8List body) {
     final a = _UsersAssigned.parse(body);
     if (a == null) return 'users-assigned-body';
     if (_trajectories.containsKey(a.trajectory)) {
       return 'users-assigned-again ${a.trajectory.hex}';
+    }
+    // A trajectory can be closed before its users are assigned.
+    if (_closedTrajectories.contains(a.trajectory)) {
+      return 'trajectory-closed ${a.trajectory.hex}';
+    }
+    if (_endedMissions.contains(a.mission)) {
+      return 'mission-ended ${a.mission.hex}';
     }
     final loopUser = _uid(a.loopUser);
     if (loopUser == null) return 'no-user ${a.loopUser}';
@@ -455,7 +488,10 @@ final class LogbookService {
     if (suit == null) return 'no-user ${a.suit}';
     if (loopUser == suit) return 'in-use ${a.suit}';
     for (final open in _trajectories.values) {
-      if (_endedMissions.contains(open.mission)) continue;
+      if (_endedMissions.contains(open.mission) ||
+          _closedTrajectories.contains(open.id)) {
+        continue;
+      }
       final inUse = {open.loopUser, open.suit};
       if (inUse.contains(loopUser)) return 'in-use ${a.loopUser}';
       if (inUse.contains(suit)) return 'in-use ${a.suit}';
@@ -724,6 +760,15 @@ final class _TrajectoryId extends Sha256Name {
     final d? => _TrajectoryId._(d),
     null => null,
   };
+
+  /// The trajectory a `trajectory-closed` entry's [body] names: a JSON object
+  /// whose `trajectory` is a trajectory id. The rest of the body is the
+  /// docking station's to read. Null when it names none.
+  static _TrajectoryId? trajectoryClosedIn(Uint8List body) =>
+      switch (_json(body)) {
+        {'trajectory': final String trajectory} => parse(trajectory),
+        _ => null,
+      };
 }
 
 /// The id of a mission, which a `mission-ended` closes.
@@ -754,12 +799,13 @@ Object? _json(Uint8List body) {
 }
 
 /// A trajectory as its `users-assigned-to-trajectory` entry handed it
-/// out: its mission, the one user who may extend its chains, and the user
-/// that wears its suit. A user that could not be found is null, and matches
-/// no sender.
+/// out: its id, its mission, the one user who may extend its chains, and the
+/// user that wears its suit. A user that could not be found is null, and
+/// matches no sender.
 final class _Trajectory {
-  _Trajectory(this.mission, this.loopUser, this.suit);
+  _Trajectory(this.id, this.mission, this.loopUser, this.suit);
 
+  final _TrajectoryId id;
   final _MissionId mission;
   final int? loopUser;
   final int? suit;
