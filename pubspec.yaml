@@ -2,7 +2,7 @@ name: is_logbook
 description: >-
   An add-only logbook of bytes: each entry chained to the one before it,
   naming the bytes and the hash of the code that wrote it.
-version: 0.2.2
+version: 0.3.0
 repository: https://github.com/intersyntactic/logbook
 
 environment:
@@ -10,6 +10,10 @@ environment:
 
 dependencies:
   is_content_id: ^0.2.0
+  is_peer_user_admission:
+    git:
+      url: https://github.com/intersyntactic/peer_user_admission
+      ref: first-release
 
 dev_dependencies:
   lints: ^6.1.0
