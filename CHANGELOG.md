@@ -3,7 +3,7 @@
 ## 0.3.0
 
 - **Breaking: users are `UserId`s**, from
-  [`is_unix_socket_user_check`](https://github.com/intersyntactic/unix_socket_user_check),
+  [`is_unix_socket_user_check`](https://pub.dev/packages/is_unix_socket_user_check),
   which the service library re-exports with `SocketUserReader`. `uidOf`
   returns `UserId?` and `SenderTable.allows` takes a `UserId`.
 - **A sender table naming 65534, `nobody`, 4294967294 or 4294967295 is
@@ -14,7 +14,12 @@
 - Who is on the other end of the socket is read by `SocketUserReader`,
   which `LogbookService.start` takes as `socketUserReader` (the running
   kernel's by default), so a test can fake any user.
-- The code hash changes: `lib/service.dart` changed.
+- **The code hash covers `is_unix_socket_user_check`**, as it covers
+  `is_content_id`: it decides who may write, so a new version of it
+  changes the hash. The README's command hashes it too.
+- The approved code hash changes with this release: `lib/` changed and
+  the hash now covers a third package. Approve the new hash before
+  running it.
 
 ## 0.2.2
 

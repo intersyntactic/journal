@@ -10,10 +10,7 @@ environment:
 
 dependencies:
   is_content_id: ^0.2.0
-  is_unix_socket_user_check:
-    git:
-      url: https://github.com/intersyntactic/unix_socket_user_check
-      ref: first-release
+  is_unix_socket_user_check: ^0.1.0
 
 dev_dependencies:
   lints: ^6.1.0

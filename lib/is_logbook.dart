@@ -40,12 +40,14 @@
 /// process read them.
 ///
 /// THE CODE HASH is the [FileSetId] of the `lib/` files of this package and
-/// of the `is_content_id` it runs with, each path under its package's name:
-/// the sha256 of what `shasum -a 256` prints for them, so the person can
-/// compute it without running this code (the README's "Checking it" gives
-/// the command). `is_content_id` is in it because it makes every name the
-/// logbook writes: a new version of it changes the hash, so the person sees
-/// it, whichever version an app resolves.
+/// of the `is_content_id` and `is_unix_socket_user_check` it runs with, each
+/// path under its package's name: the sha256 of what `shasum -a 256` prints
+/// for them, so the person can compute it without running this code (the
+/// README's "Checking it" gives the command). `is_content_id` is in it
+/// because it makes every name the logbook writes, and
+/// `is_unix_socket_user_check` because it decides who the service lets
+/// write: a new version of either changes the hash, so the person sees it,
+/// whichever version an app resolves.
 ///
 /// A compiled build has no `lib/` to hash, so it is given the hash when it
 /// is compiled, by `dart run is_logbook:code_hash`, from the source the
@@ -316,7 +318,8 @@ final class Logbook {
     _claim.closeSync();
   }
 
-  /// The hash of this package's `lib/` and `is_content_id`'s, as the library
+  /// The hash of this package's `lib/`, `is_content_id`'s and
+  /// `is_unix_socket_user_check`'s, as the library
   /// comment computes it. Null when it cannot be computed exactly that way:
   /// the source is not on disk, as in a compiled build; a `lib/` holds a
   /// link, which `find` and this code would walk differently; or a file's
@@ -324,7 +327,11 @@ final class Logbook {
   /// ([ListedPath.parse]).
   static FileSetId? ownHash() {
     final files = <ListedPath, ObjectId>{};
-    for (final package in const ['is_content_id', 'is_logbook']) {
+    for (final package in const [
+      'is_content_id',
+      'is_logbook',
+      'is_unix_socket_user_check',
+    ]) {
       if (!_listLib(package, files)) return null;
     }
     return FileSetId.of(files);

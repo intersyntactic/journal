@@ -82,12 +82,13 @@ relative directory is resolved when the logbook opens.
 ## Checking it
 
 The code hash is the sha256 of what `shasum -a 256` prints for the `lib/`
-files of this package and of the `is_content_id` it runs with, each path
-under its package's name, so it can be checked without running any of its
+files of this package and of the `is_content_id` and
+`is_unix_socket_user_check` it runs with, each path under its package's
+name, so it can be checked without running any of its
 code. From the root of this package, or of an app that uses it, after
 `dart pub get`:
 
-    (cd .dart_tool && for p in is_content_id is_logbook; do
+    (cd .dart_tool && for p in is_content_id is_logbook is_unix_socket_user_check; do
       r=$(sed -n "/\"name\": \"$p\"/{n;s|.*\"rootUri\": \"\(file://\)\{0,1\}\(.*\)\",|\2|p;}" package_config.json)
       (cd "$r/lib" && find . -type f -name '*.dart' -print0 | LC_ALL=C sort -z |
         xargs -0 shasum -a 256 | sed "s|  \./|  ./$p/|")
@@ -230,7 +231,7 @@ which never writes, can be any number:
     LogbookService.start(logbook, table, socket, uidOf: (user) => uids[user]);
 
 Who is on the other end of the socket is read by
-[`is_unix_socket_user_check`](https://github.com/intersyntactic/unix_socket_user_check)'s
+[`is_unix_socket_user_check`](https://pub.dev/packages/is_unix_socket_user_check)'s
 `SocketUserReader`, from the kernel's `SO_PEERCRED` (Linux) or
 `LOCAL_PEERCRED` (macOS). A user it cannot name is refused. Users are
 `UserId`s, which cannot be 65534 (the overflow uid a user unmapped in the
@@ -274,3 +275,8 @@ closes it after `tip` and `get`.
 `ObjectId`, `FileSetId` and the sha256 every name is made with. The logbook
 re-exports it, and its code is in the code hash, so a new version of it
 changes the hash.
+
+The service also imports
+[`is_unix_socket_user_check`](https://pub.dev/packages/is_unix_socket_user_check),
+which reads who is on the other end of its socket. It decides who may
+write, so its code is in the code hash too.
