@@ -44,7 +44,12 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:is_unix_socket_user_check/is_unix_socket_user_check.dart';
+
 import 'is_logbook.dart';
+
+export 'package:is_unix_socket_user_check/is_unix_socket_user_check.dart'
+    show SocketUserReader, UserId;
 
 /// The kind of an entry: a name of letters, digits, `.`, `_` and `-`. Not
 /// `-`, which reads as "no previous entry", and not [started], which only the
@@ -106,7 +111,7 @@ final class SenderTable {
 
   /// The table as it was read, which the `started` entry holds.
   final Uint8List bytes;
-  final Map<int, Set<Kind>> _kinds;
+  final Map<UserId, Set<Kind>> _kinds;
 
   /// The kinds that attach.
   final Set<Kind> attaching;
@@ -118,12 +123,13 @@ final class SenderTable {
   /// kind is one whose body the service reads (such as
   /// [Kind.missionEnded]), or a
   /// user is not one [uidOf] finds. [uidOf] defaults to a number as itself
-  /// and a name as `id -u` prints it.
+  /// and a name as `id -u` prints it, and a user [UserId.parse] refuses
+  /// (65534, `nobody`) is not one it finds.
   static SenderTable parse(
     Uint8List bytes, {
-    int? Function(String user) uidOf = _uidOfUser,
+    UserId? Function(String user) uidOf = _uidOfUser,
   }) {
-    final kinds = <int, Set<Kind>>{};
+    final kinds = <UserId, Set<Kind>>{};
     final attaching = <Kind>{};
     final lines = utf8.decode(bytes).split('\n');
     for (var n = 0; n < lines.length; n++) {
@@ -142,8 +148,8 @@ final class SenderTable {
         }
         continue;
       }
-      final uid = uidOf(words.first);
-      if (uid == null) {
+      final user = uidOf(words.first);
+      if (user == null) {
         throw FormatException('line ${n + 1}: no user ${words.first}');
       }
       for (final word in words.skip(1)) {
@@ -151,7 +157,7 @@ final class SenderTable {
         if (kind == null) {
           throw FormatException('line ${n + 1}: $word is not a kind');
         }
-        (kinds[uid] ??= {}).add(kind);
+        (kinds[user] ??= {}).add(kind);
       }
     }
     return SenderTable._(bytes, kinds, attaching);
@@ -173,16 +179,22 @@ final class SenderTable {
             kind,
   };
 
-  /// Whether the user [uid] may send [kind].
-  bool allows(int uid, Kind kind) => _kinds[uid]?.contains(kind) ?? false;
+  /// Whether [user] may send [kind].
+  bool allows(UserId user, Kind kind) => _kinds[user]?.contains(kind) ?? false;
 }
 
-/// [user] as a uid: a number as itself, a name as `id -u` prints it. Null
-/// when there is no such user.
-int? _uidOfUser(String user) {
-  if (int.tryParse(user) case final uid?) return uid;
-  final r = Process.runSync('id', ['-u', user]);
-  return r.exitCode == 0 ? int.tryParse(r.stdout.toString().trim()) : null;
+/// [user] as a user id: a number as itself, a name as `id -u` prints it.
+/// Null when there is no such user, or [UserId.parse] refuses its id.
+UserId? _uidOfUser(String user) {
+  final uid =
+      int.tryParse(user) ??
+      switch (Process.runSync('id', ['-u', user])) {
+        final r when r.exitCode == 0 => int.tryParse(
+          r.stdout.toString().trim(),
+        ),
+        _ => null,
+      };
+  return uid == null ? null : UserId.parse(uid);
 }
 
 /// The writer of [logbook], listening on [socket].
@@ -193,6 +205,7 @@ final class LogbookService {
     this._socket,
     this._server,
     this._uidOf,
+    this._socketUserReader,
   );
 
   /// The largest request it reads, in bytes.
@@ -202,7 +215,8 @@ final class LogbookService {
   final SenderTable _senders;
   final File _socket;
   final ServerSocket _server;
-  final int? Function(String user) _uidOf;
+  final UserId? Function(String user) _uidOf;
+  final SocketUserReader _socketUserReader;
   File? _readSocket;
   ServerSocket? _readServer;
 
@@ -245,7 +259,7 @@ final class LogbookService {
   var _attaching = <Kind>{};
 
   /// Users looked up since the chains were last read back.
-  final _uids = <String, int?>{};
+  final _uids = <String, UserId?>{};
 
   /// The readers subscribed to entries as they are added.
   final _subscribers = <_Subscriber>{};
@@ -256,12 +270,15 @@ final class LogbookService {
   /// [StateError] when another service is listening on either socket; a
   /// socket file nothing listens on is replaced. [uidOf] finds the users a
   /// `users-assigned-to-trajectory` names, as [SenderTable.parse]'s does.
+  /// [socketUserReader] reads who is on the other end of [socket], the running
+  /// kernel's reader by default.
   static Future<LogbookService> start(
     Logbook logbook,
     SenderTable senders,
     File socket, {
     File? readSocket,
-    int? Function(String user) uidOf = _uidOfUser,
+    UserId? Function(String user) uidOf = _uidOfUser,
+    SocketUserReader? socketUserReader,
   }) async {
     final service = LogbookService._(
       logbook,
@@ -269,6 +286,7 @@ final class LogbookService {
       socket,
       await _bind(socket),
       uidOf,
+      socketUserReader ?? SocketUserReader(),
     );
     if (readSocket != null) {
       service._readServer = await _bind(readSocket);
@@ -423,9 +441,9 @@ final class LogbookService {
     }
   }
 
-  /// Why [header], sent by [uid], breaks a trajectory's ownership; null when it
+  /// Why [header], sent by [user], breaks a trajectory's ownership; null when it
   /// does not. Called after the tip check, so a previous entry is a tip.
-  String? _ownership(int uid, _Header header, Uint8List request) {
+  String? _ownership(UserId user, _Header header, Uint8List request) {
     final body = _bodyOf(request);
     final kind = header.kind;
     String? owned(_Trajectory? trajectory) => switch (trajectory) {
@@ -434,7 +452,7 @@ final class LogbookService {
         'mission-ended ${trajectory.mission.hex}',
       _ when _closedTrajectories.contains(trajectory.id) =>
         'trajectory-closed ${trajectory.id.hex}',
-      _ when trajectory.loopUser != uid => 'not-owner',
+      _ when trajectory.loopUser != user => 'not-owner',
       _ => null,
     };
 
@@ -499,7 +517,7 @@ final class LogbookService {
     return null;
   }
 
-  int? _uid(String user) => _uids.putIfAbsent(user, () => _uidOf(user));
+  UserId? _uid(String user) => _uids.putIfAbsent(user, () => _uidOf(user));
 
   bool _isTip(ObjectId entry) => switch (_chainOf[entry]) {
     final start? => _tipOf[start] == entry,
@@ -521,7 +539,7 @@ final class LogbookService {
   }
 
   Future<void> _serve(Socket socket) async {
-    final uid = _peerUid(socket);
+    final user = _socketUserReader.userOf(socket);
     final request = BytesBuilder(copy: false);
     var tooLarge = false;
     try {
@@ -534,7 +552,7 @@ final class LogbookService {
       }
       final answer = tooLarge
           ? 'refused too-large'
-          : _answer(uid, request.takeBytes());
+          : _answer(user, request.takeBytes());
       socket.add(utf8.encode('$answer\n'));
       await socket.close();
     } on SocketException {
@@ -542,15 +560,16 @@ final class LogbookService {
     }
   }
 
-  /// Checks [request] from the user [uid] and adds it, all in one
+  /// Checks [request] from [user], null when the kernel does not name one,
+  /// and adds it, all in one
   /// synchronous step, so no other request comes between the check and the
   /// add.
-  String _answer(int? uid, Uint8List request) {
+  String _answer(UserId? user, Uint8List request) {
     final header = _Header.parse(request);
     if (header == null) return 'refused no-header';
     final Kind(:name) = header.kind;
-    if (uid == null || !_senders.allows(uid, header.kind)) {
-      return 'refused kind $name for user ${uid ?? 'unknown'}';
+    if (user == null || !_senders.allows(user, header.kind)) {
+      return 'refused kind $name for user ${user ?? 'unknown'}';
     }
     final entry = ObjectId.of(request);
     if (_entries.containsKey(entry)) return 'refused duplicate ${entry.hex}';
@@ -562,7 +581,7 @@ final class LogbookService {
         return 'refused not-tip ${_tipOf[start]!.hex}';
       }
     }
-    if (_ownership(uid, header, request) case final why?) {
+    if (_ownership(user, header, request) case final why?) {
       return 'refused $why';
     }
     try {
@@ -807,8 +826,8 @@ final class _Trajectory {
 
   final _TrajectoryId id;
   final _MissionId mission;
-  final int? loopUser;
-  final int? suit;
+  final UserId? loopUser;
+  final UserId? suit;
 }
 
 /// A `users-assigned-to-trajectory` entry's body, read strictly: exactly
@@ -890,22 +909,4 @@ final class _Header {
     if (kind == null || (previousText != '-' && previous == null)) return null;
     return _Header(kind, previous);
   }
-}
-
-/// The user on the other end of [socket], as the kernel reports it: Linux's
-/// `SO_PEERCRED`, macOS's `LOCAL_PEERCRED`. Null where neither is known.
-int? _peerUid(Socket socket) {
-  try {
-    if (Platform.isLinux) {
-      final ucred = socket.getRawOption(RawSocketOption(1, 17, Uint8List(12)));
-      return ByteData.sublistView(ucred).getUint32(4, Endian.host);
-    }
-    if (Platform.isMacOS) {
-      final xucred = socket.getRawOption(RawSocketOption(0, 1, Uint8List(76)));
-      return ByteData.sublistView(xucred).getUint32(4, Endian.host);
-    }
-  } on SocketException {
-    return null;
-  }
-  return null;
 }

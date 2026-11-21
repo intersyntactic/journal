@@ -5,6 +5,8 @@ import 'dart:typed_data';
 
 import 'package:is_logbook/is_logbook.dart';
 import 'package:is_logbook/service.dart';
+import 'package:is_unix_socket_user_check/is_unix_socket_user_check.dart'
+    show Kernel;
 import 'package:test/test.dart';
 
 Uint8List bytesOf(String s) => utf8.encode(s);
@@ -541,7 +543,10 @@ void main() {
 
     test('finds users through the uidOf it is given', () async {
       await service.close();
-      final uids = {'loop-1': myUid, 'suit-1': 5001};
+      final uids = {
+        'loop-1': UserId.parse(myUid)!,
+        'suit-1': UserId.parse(5001)!,
+      };
       service = await LogbookService.start(
         Logbook.open(dir)!,
         SenderTable.parse(bytesOf('$me users-assigned-to-trajectory turn\n')),
@@ -579,6 +584,11 @@ void main() {
           usersAssigned(trajectory1, mission1, '9001', 'no-such-user-xq'),
         ),
         'refused no-user no-such-user-xq',
+      );
+      // The overflow uid names no one user, so it can be no one's suit.
+      expect(
+        await send(socket, usersAssigned(trajectory1, mission1, me, '65534')),
+        'refused no-user 65534',
       );
     });
 
@@ -934,6 +944,52 @@ void main() {
     });
   });
 
+  group('the socket user', () {
+    /// A reader that says, as Linux's `SO_PEERCRED` would, that the user on
+    /// the other end of every socket is [uid].
+    SocketUserReader socketUserIs(int uid) => SocketUserReader(
+      kernel: Kernel.linux,
+      readOption: (_, _) =>
+          Uint8List(12)..buffer.asByteData().setUint32(4, uid, Endian.host),
+      overflowUid: () => 65534,
+    );
+
+    Future<void> startAs(int uid) async {
+      await service.close();
+      service = await LogbookService.start(
+        Logbook.open(dir)!,
+        SenderTable.parse(bytesOf('5001 turn\n')),
+        socket,
+        readSocket: readSocket,
+        socketUserReader: socketUserIs(uid),
+      );
+    }
+
+    test('is who the reader it is given says', () async {
+      await startAs(5001);
+      expect(await send(socket, 'turn\n-\nhello'), startsWith('ok '));
+    });
+
+    test('is refused when it is not in the table', () async {
+      await startAs(5002);
+      expect(
+        await send(socket, 'turn\n-\nhello'),
+        'refused kind turn for user 5002',
+      );
+    });
+
+    test(
+      'is unknown, and refused, when it reads as the overflow uid',
+      () async {
+        await startAs(65534);
+        expect(
+          await send(socket, 'turn\n-\nhello'),
+          'refused kind turn for user unknown',
+        );
+      },
+    );
+  });
+
   group('the sender table', () {
     test('refuses a kind it cannot hold, and a user it cannot find', () {
       for (final bad in [
@@ -946,6 +1002,27 @@ void main() {
         expect(
           () => SenderTable.parse(bytesOf(bad)),
           throwsFormatException,
+          reason: bad,
+        );
+      }
+    });
+
+    test('refuses an id the kernel uses for a user it does not know', () {
+      for (final bad in [
+        '65534 turn\n',
+        'nobody turn\n',
+        '4294967294 turn\n',
+        '4294967295 turn\n',
+      ]) {
+        expect(
+          () => SenderTable.parse(bytesOf(bad)),
+          throwsA(
+            isA<FormatException>().having(
+              (e) => e.message,
+              'message',
+              startsWith('line 1: no user '),
+            ),
+          ),
           reason: bad,
         );
       }
