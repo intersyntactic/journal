@@ -5,7 +5,8 @@ import 'dart:typed_data';
 
 import 'package:is_logbook/is_logbook.dart';
 import 'package:is_logbook/service.dart';
-import 'package:is_peer_user_admission/is_peer_user_admission.dart' show Kernel;
+import 'package:is_unix_socket_user_check/is_unix_socket_user_check.dart'
+    show Kernel;
 import 'package:test/test.dart';
 
 Uint8List bytesOf(String s) => utf8.encode(s);
@@ -943,10 +944,10 @@ void main() {
     });
   });
 
-  group('the peer', () {
-    /// A reader that says, as Linux's `SO_PEERCRED` would, that every peer
-    /// is [uid].
-    PeerUserReader peerIs(int uid) => PeerUserReader(
+  group('the socket user', () {
+    /// A reader that says, as Linux's `SO_PEERCRED` would, that the user on
+    /// the other end of every socket is [uid].
+    SocketUserReader socketUserIs(int uid) => SocketUserReader(
       kernel: Kernel.linux,
       readOption: (_, _) =>
           Uint8List(12)..buffer.asByteData().setUint32(4, uid, Endian.host),
@@ -960,7 +961,7 @@ void main() {
         SenderTable.parse(bytesOf('5001 turn\n')),
         socket,
         readSocket: readSocket,
-        peers: peerIs(uid),
+        socketUserReader: socketUserIs(uid),
       );
     }
 

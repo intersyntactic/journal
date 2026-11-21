@@ -230,14 +230,14 @@ which never writes, can be any number:
     LogbookService.start(logbook, table, socket, uidOf: (user) => uids[user]);
 
 Who is on the other end of the socket is read by
-[`is_peer_user_admission`](https://github.com/intersyntactic/peer_user_admission)'s
-`PeerUserReader`, from the kernel's `SO_PEERCRED` (Linux) or
-`LOCAL_PEERCRED` (macOS). A peer it cannot name is refused. Users are
+[`is_unix_socket_user_check`](https://github.com/intersyntactic/unix_socket_user_check)'s
+`SocketUserReader`, from the kernel's `SO_PEERCRED` (Linux) or
+`LOCAL_PEERCRED` (macOS). A user it cannot name is refused. Users are
 `UserId`s, which cannot be 65534 (the overflow uid a user unmapped in the
 service's user namespace reads as), `nobody` or `(uid_t)-1`, so a sender
 table or a `users-assigned-to-trajectory` naming one is refused rather than
-admitting every unmapped peer. A test can pass `LogbookService.start` a
-`peers` reader that fakes the socket read, to be any peer.
+letting in every unmapped user. A test can pass `LogbookService.start` a
+`socketUserReader` that fakes the socket read, to be any user.
 
 Given `LOGBOOK_READ_SOCKET`, it also listens for readers there, who can only
 read. The logbook publishes each entry it keeps, and a reader subscribes to

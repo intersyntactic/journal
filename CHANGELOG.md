@@ -3,16 +3,17 @@
 ## 0.3.0
 
 - **Breaking: users are `UserId`s**, from
-  [`is_peer_user_admission`](https://github.com/intersyntactic/peer_user_admission),
-  which the service library re-exports with `PeerUserReader`. `uidOf`
+  [`is_unix_socket_user_check`](https://github.com/intersyntactic/unix_socket_user_check),
+  which the service library re-exports with `SocketUserReader`. `uidOf`
   returns `UserId?` and `SenderTable.allows` takes a `UserId`.
 - **A sender table naming 65534, `nobody`, 4294967294 or 4294967295 is
   refused** (`FormatException` `no user ...`), as is a
   `users-assigned-to-trajectory` naming one (`refused no-user ...`). The
-  kernel reports a peer unmapped in the service's user namespace as 65534,
-  so such a line used to admit every unmapped peer.
-- The peer is read by `PeerUserReader`, which `LogbookService.start` takes
-  as `peers` (the running kernel's by default), so a test can fake any peer.
+  kernel reports a user unmapped in the service's user namespace as 65534,
+  so such a line used to let in every unmapped user.
+- Who is on the other end of the socket is read by `SocketUserReader`,
+  which `LogbookService.start` takes as `socketUserReader` (the running
+  kernel's by default), so a test can fake any user.
 - The code hash changes: `lib/service.dart` changed.
 
 ## 0.2.2

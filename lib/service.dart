@@ -44,12 +44,12 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:is_peer_user_admission/is_peer_user_admission.dart';
+import 'package:is_unix_socket_user_check/is_unix_socket_user_check.dart';
 
 import 'is_logbook.dart';
 
-export 'package:is_peer_user_admission/is_peer_user_admission.dart'
-    show PeerUserReader, UserId;
+export 'package:is_unix_socket_user_check/is_unix_socket_user_check.dart'
+    show SocketUserReader, UserId;
 
 /// The kind of an entry: a name of letters, digits, `.`, `_` and `-`. Not
 /// `-`, which reads as "no previous entry", and not [started], which only the
@@ -205,7 +205,7 @@ final class LogbookService {
     this._socket,
     this._server,
     this._uidOf,
-    this._peers,
+    this._socketUserReader,
   );
 
   /// The largest request it reads, in bytes.
@@ -216,7 +216,7 @@ final class LogbookService {
   final File _socket;
   final ServerSocket _server;
   final UserId? Function(String user) _uidOf;
-  final PeerUserReader _peers;
+  final SocketUserReader _socketUserReader;
   File? _readSocket;
   ServerSocket? _readServer;
 
@@ -270,7 +270,7 @@ final class LogbookService {
   /// [StateError] when another service is listening on either socket; a
   /// socket file nothing listens on is replaced. [uidOf] finds the users a
   /// `users-assigned-to-trajectory` names, as [SenderTable.parse]'s does.
-  /// [peers] reads who is on the other end of [socket], the running
+  /// [socketUserReader] reads who is on the other end of [socket], the running
   /// kernel's reader by default.
   static Future<LogbookService> start(
     Logbook logbook,
@@ -278,7 +278,7 @@ final class LogbookService {
     File socket, {
     File? readSocket,
     UserId? Function(String user) uidOf = _uidOfUser,
-    PeerUserReader? peers,
+    SocketUserReader? socketUserReader,
   }) async {
     final service = LogbookService._(
       logbook,
@@ -286,7 +286,7 @@ final class LogbookService {
       socket,
       await _bind(socket),
       uidOf,
-      peers ?? PeerUserReader(),
+      socketUserReader ?? SocketUserReader(),
     );
     if (readSocket != null) {
       service._readServer = await _bind(readSocket);
@@ -539,7 +539,7 @@ final class LogbookService {
   }
 
   Future<void> _serve(Socket socket) async {
-    final user = _peers.userOf(socket);
+    final user = _socketUserReader.userOf(socket);
     final request = BytesBuilder(copy: false);
     var tooLarge = false;
     try {

@@ -10,9 +10,9 @@ environment:
 
 dependencies:
   is_content_id: ^0.2.0
-  is_peer_user_admission:
+  is_unix_socket_user_check:
     git:
-      url: https://github.com/intersyntactic/peer_user_admission
+      url: https://github.com/intersyntactic/unix_socket_user_check
       ref: first-release
 
 dev_dependencies:
